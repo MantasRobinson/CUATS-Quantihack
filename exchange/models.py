@@ -55,6 +55,7 @@ class Order:
         Fills that this order has participated in.
     """
 
+    #Saves memory since we have a fixed set of attributes and potentially many Order instances
     __slots__ = (
         "order_id", "order_owner", "order_type", "side", "asset",
         "quantity", "price", "filled_quantity", "remaining_quantity",
