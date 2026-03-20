@@ -1,4 +1,4 @@
-from exchange import OrderBook
+from exchange.orderbook import OrderBook
 ob = OrderBook()
 # Submit two limit orders
 r1 = ob.submit_order(1, "alice", "limit", "sell", "COFFEE", 100, 10.0)
