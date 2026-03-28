@@ -1,7 +1,7 @@
 """Live simulation dashboard — runs its own agent simulation and displays it.
 
 Usage:
-    python live_dashboard.py                         # 1 MM, 5 retail, 0 manip
+    python live_dashboard.py                         # 1 MM, 5 retail, 1 manip
     python live_dashboard.py --mm 1 --retail 3 --manip 1
     python live_dashboard.py --manip 2               # add 2 manipulators
 
@@ -34,7 +34,7 @@ import numpy as np
 from collections import deque
 
 from agents.simulation import Simulation, SimulationConfig
-from agents.market_maker import MarketMakerAgent, MarketMakerConfig
+from agents.market_maker import MarketMakerAgent
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.manipulator import ManipulatorAgent, ManipulatorConfig
 from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
@@ -76,8 +76,8 @@ _RETAIL_CFGS = [
 # Simulation setup
 # ─────────────────────────────────────────────────────────────────────
 
-def build_simulation(num_mm: int = 1, num_retail: int = 5, num_manip: int = 0):
-    sim_cfg = SimulationConfig(num_steps=999_999, asset="ASSET", seed=42)
+def build_simulation(num_mm: int = 1, num_retail: int = 5, num_manip: int = 1):
+    sim_cfg = SimulationConfig(num_steps=999_999, asset=BTC_ASSET, seed=42)
     sim = Simulation(sim_cfg)
 
     mm_agents = []
@@ -86,11 +86,7 @@ def build_simulation(num_mm: int = 1, num_retail: int = 5, num_manip: int = 0):
         mm = MarketMakerAgent(
             name=name, asset=sim.asset, orderbook=sim.ob,
             id_generator=sim.id_generator,
-            config=MarketMakerConfig(
-                fair_value=100.0, half_spread=0.05, quote_size=15,
-                max_inventory=200, skew_factor=0.02, num_levels=5,
-                level_spacing=0.05, fair_value_ema=0.05,
-            ),
+            config=build_btc_market_maker_config(),
         )
         sim.add_agent(mm)
         mm_agents.append(mm)
@@ -427,8 +423,8 @@ if __name__ == "__main__":
                         help="Number of market-maker agents (default: 1)")
     parser.add_argument("--retail", type=int, default=5, metavar="N",
                         help="Number of retail-trader agents (default: 5)")
-    parser.add_argument("--manip",  type=int, default=0, metavar="N",
-                        help="Number of market-manipulator agents (default: 0)")
+    parser.add_argument("--manip",  type=int, default=1, metavar="N",
+                        help="Number of market-manipulator agents (default: 1)")
     args = parser.parse_args()
 
     print(f"Building simulation: {args.mm} MM  {args.retail} Retail  {args.manip} Manip")
