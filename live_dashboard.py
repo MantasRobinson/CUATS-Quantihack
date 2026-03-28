@@ -25,9 +25,10 @@ import numpy as np
 from collections import deque
 
 from agents.simulation import Simulation, SimulationConfig
-from agents.market_maker import MarketMakerAgent, MarketMakerConfig
+from agents.market_maker import MarketMakerAgent
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.manipulator import ManipulatorAgent, ManipulatorConfig
+from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -35,8 +36,8 @@ from agents.manipulator import ManipulatorAgent, ManipulatorConfig
 # ─────────────────────────────────────────────────────────────────────
 
 WINDOW         = 600    # how many steps of history visible on screen
-STEPS_PER_FRAME = 3     # sim steps computed per animation frame
-FRAME_MS       = 80     # milliseconds between frames (~12 fps)
+STEPS_PER_FRAME = 2     # sim steps computed per animation frame
+FRAME_MS       = 100    # milliseconds between frames (~10 fps)
 
 AGENT_COLORS = {
     "MM":    "#E91E63",
@@ -54,18 +55,13 @@ AGENT_COLORS = {
 # ─────────────────────────────────────────────────────────────────────
 
 def build_simulation():
-    sim_cfg = SimulationConfig(num_steps=999_999, asset="BTC", seed=42)
+    sim_cfg = SimulationConfig(num_steps=999_999, asset=BTC_ASSET, seed=42)
     sim = Simulation(sim_cfg)
 
     mm = MarketMakerAgent(
         name="MM", asset=sim.asset, orderbook=sim.ob,
         id_generator=sim.id_generator,
-        config=MarketMakerConfig(
-            fair_value=100.0, half_spread=0.40, quote_size=15,
-            max_inventory=200, skew_factor=0.02, num_levels=5,
-            level_spacing=0.15, fair_value_ema=0.05,
-            annual_drift=0.05, annual_vol=0.60,
-        ),
+        config=build_btc_market_maker_config(),
     )
     sim.add_agent(mm)
 
@@ -199,8 +195,14 @@ class LiveDashboard:
         # ── Panel 5: Depth ──
         self.ax_depth = self.fig.add_subplot(gs[2, 1])
         self.ax_depth.set_title("Order Book Depth", fontsize=12, color="#90CAF9", pad=8)
+        self.ax_depth.set_ylabel("Volume", fontsize=9)
+        self.ax_depth.set_xlabel("Price", fontsize=9)
         self.ax_depth.tick_params(labelsize=8)
         self.ax_depth.grid(True, alpha=0.12)
+        self._depth_bars_bid = None
+        self._depth_bars_ask = None
+        self._depth_legend_added = False
+        self._depth_frame_skip = 0  # only redraw depth every N frames
 
         # ── Stats bar ──
         self.stats_txt = self.fig.text(
@@ -312,33 +314,43 @@ class LiveDashboard:
                 pad = max(abs(hi - lo), 10) * 0.15
                 self.ax_pos.set_ylim(lo - pad, hi + pad)
 
-            # — Depth (full redraw) —
-            self.ax_depth.clear()
-            self.ax_depth.set_title("Order Book Depth", fontsize=12,
-                                    color="#90CAF9", pad=8)
-            self.ax_depth.set_ylabel("Volume", fontsize=9)
-            self.ax_depth.set_xlabel("Price", fontsize=9)
-            self.ax_depth.tick_params(labelsize=8)
-            self.ax_depth.grid(True, alpha=0.12)
+            # — Depth (update every 3rd frame to reduce load) —
+            self._depth_frame_skip += 1
+            if self._depth_frame_skip >= 3:
+                self._depth_frame_skip = 0
 
-            depth = self.sim.ob.get_market_depth(self.sim.asset, levels=10)
-            bp = [p for p, v in depth["bids"]]
-            bv = [v for p, v in depth["bids"]]
-            ap = [p for p, v in depth["asks"]]
-            av = [v for p, v in depth["asks"]]
+                # Remove old bars
+                if self._depth_bars_bid is not None:
+                    self._depth_bars_bid.remove()
+                    self._depth_bars_bid = None
+                if self._depth_bars_ask is not None:
+                    self._depth_bars_ask.remove()
+                    self._depth_bars_ask = None
 
-            bar_w = 0.06
-            if bp:
-                self.ax_depth.bar(bp, bv, width=bar_w, color="#4CAF50",
-                                  alpha=0.85, label="Bids")
-            if ap:
-                self.ax_depth.bar(ap, av, width=bar_w, color="#F44336",
-                                  alpha=0.85, label="Asks")
-            if bp or ap:
-                allp = bp + ap
-                self.ax_depth.set_xlim(min(allp) - 0.5, max(allp) + 0.5)
-                self.ax_depth.legend(fontsize=7, facecolor="#1a1a2e",
-                                     edgecolor="#333")
+                depth = self.sim.ob.get_market_depth(self.sim.asset, levels=10)
+                bp = [p for p, v in depth["bids"]]
+                bv = [v for p, v in depth["bids"]]
+                ap = [p for p, v in depth["asks"]]
+                av = [v for p, v in depth["asks"]]
+
+                bar_w = 0.06
+                if bp:
+                    self._depth_bars_bid = self.ax_depth.bar(
+                        bp, bv, width=bar_w, color="#4CAF50", alpha=0.85,
+                        label="Bids" if not self._depth_legend_added else "_")
+                if ap:
+                    self._depth_bars_ask = self.ax_depth.bar(
+                        ap, av, width=bar_w, color="#F44336", alpha=0.85,
+                        label="Asks" if not self._depth_legend_added else "_")
+                if bp or ap:
+                    allp = bp + ap
+                    self.ax_depth.set_xlim(min(allp) - 0.5, max(allp) + 0.5)
+                    allv = bv + av
+                    self.ax_depth.set_ylim(0, max(allv) * 1.2 if allv else 1)
+                    if not self._depth_legend_added:
+                        self.ax_depth.legend(fontsize=7, facecolor="#1a1a2e",
+                                             edgecolor="#333")
+                        self._depth_legend_added = True
 
             # — Stats bar —
             tc = len(self.sim.ob._trades)
@@ -351,6 +363,9 @@ class LiveDashboard:
                 f"MANIP pos {self.manip.state.position:+d}  "
                 f"phase {self.manip._current_phase}  "
             )
+
+            # Flush events so Windows doesn't show "not responding" cursor
+            self.fig.canvas.flush_events()
 
         except Exception:
             traceback.print_exc()
