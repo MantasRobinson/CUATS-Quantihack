@@ -34,7 +34,7 @@ import numpy as np
 from collections import deque
 
 from agents.simulation import Simulation, SimulationConfig
-from agents.market_maker import MarketMakerAgent
+from agents.market_maker import MarketMakerAgent, MarketMakerConfig
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.manipulator import ManipulatorAgent, ManipulatorConfig
 from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
