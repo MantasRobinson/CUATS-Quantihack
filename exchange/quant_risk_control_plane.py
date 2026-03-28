@@ -180,7 +180,8 @@ class PSIDetector:
 
 
 class FeatureHealth:
-    def __init__(self, name: str, reference_window: int = 2000, live_window: int = 300):
+    def __init__(self, name: str, reference_window: int = 800, live_window: int = 200,
+                 refit_interval: int = 150):
         self.name = name
         self.reference = RollingWindow(reference_window)
         self.live = RollingWindow(live_window)
@@ -189,18 +190,30 @@ class FeatureHealth:
         self.ready = False
         self.last_z = 0.0
         self.last_psi = 0.0
+        self._refit_interval = refit_interval
+        self._since_refit = 0
 
     def update(self, x: float, thresholds: Thresholds) -> Dict[str, float]:
         self.last_z = self.zscore.update(x)
-        if len(self.reference) < self.reference.size:
-            self.reference.add(x)
-        else:
-            if not self.ready and len(self.reference) >= thresholds.min_reference_points:
+        self.reference.add(x)
+        self.live.add(x)
+
+        if len(self.reference) >= thresholds.min_reference_points:
+            if not self.ready:
                 self.psi.fit(self.reference.data())
                 self.ready = True
-            self.live.add(x)
+                self._since_refit = 0
+            else:
+                # Periodically refit the PSI reference from the rolling window
+                # so it adapts to GBM drift / regime changes over time.
+                self._since_refit += 1
+                if self._since_refit >= self._refit_interval:
+                    self.psi.fit(self.reference.data())
+                    self._since_refit = 0
+
             if self.ready and len(self.live) >= thresholds.min_live_points:
                 self.last_psi = self.psi.score(self.live.data())
+
         return {"zscore": self.last_z, "psi": self.last_psi}
 
 

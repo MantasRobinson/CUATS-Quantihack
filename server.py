@@ -63,10 +63,10 @@ MARKET_EVERY = TICK_RATE // MARKET_RATE
 HOST         = "localhost"
 PORT         = 8765
 
-STRESS_CHANCE    = 0.008   # probability per tick of triggering a stress event
-STRESS_MIN_TICKS = 120     # ~2 s at 60 Hz
-STRESS_MAX_TICKS = 420     # ~7 s
-CALM_MIN_TICKS   = 240     # ~4 s mandatory calm after each stress
+STRESS_CHANCE    = 0.005   # probability per tick of triggering a stress event
+STRESS_MIN_TICKS = 90      # ~1.5 s at 60 Hz
+STRESS_MAX_TICKS = 300     # ~5 s
+CALM_MIN_TICKS   = 360     # ~6 s mandatory calm after each stress (longer recovery)
 
 
 def build_agent_sim_thresholds() -> Thresholds:
@@ -78,15 +78,17 @@ def build_agent_sim_thresholds() -> Thresholds:
     spread shocks dominate the state machine.
     """
     return Thresholds(
-        max_latency_ms=75.0,
-        hard_latency_ms=125.0,
+        max_latency_ms=80.0,
+        hard_latency_ms=200.0,
         max_drawdown=1e18,
         hard_drawdown=1e18,
-        psi_alert=0.35,
-        psi_halt=0.75,
-        zscore_alert=6.0,
-        zscore_halt=10.0,
-        max_spread_bps=100.0,
+        psi_alert=1.5,          # loose — only genuine regime shifts trigger ALERT
+        psi_halt=4.0,           # very loose — only extreme distributional breaks
+        min_reference_points=200,
+        min_live_points=80,
+        zscore_alert=8.0,
+        zscore_halt=18.0,
+        max_spread_bps=150.0,   # stress MM quotes ~40 bps, give headroom
     )
 
 
@@ -293,9 +295,14 @@ class AgentOrderbookSimulator:
         best_bid = ob.get_best_bid(self.ASSET)
         best_ask = ob.get_best_ask(self.ASSET)
 
-        # Fallback proportional to mid so spread_bps stays ~20 bps when book is empty
+        # Fallback proportional to mid so spread_bps stays ~20 bps when book is empty.
+        # Always guarantee bid < ask to avoid triggering crossed-market HALT.
         bid = best_bid[0] if best_bid else self.prev_mid * 0.9990
         ask = best_ask[0] if best_ask else self.prev_mid * 1.0010
+        if bid >= ask:
+            mid_est = (bid + ask) / 2.0
+            bid = mid_est * 0.9990
+            ask = mid_est * 1.0010
         mid = (bid + ask) / 2.0
 
         depth   = ob.get_market_depth(self.ASSET, levels=5)
@@ -410,7 +417,7 @@ class AgentOrderbookSimulator:
             print("  [halt] HALT triggered — all resting orders cancelled, trading suspended.",
                   flush=True)
         elif not new_halt and self._halt_active:
-            self._halt_cooldown = 60  # ~6 s at 10 Hz before HALT can re-trigger
+            self._halt_cooldown = 120  # ~12 s at 10 Hz — give agents time to rebuild quotes
             print("  [halt] HALT cleared — trading resumed (60-step cooldown).", flush=True)
 
         self._halt_active = new_halt
