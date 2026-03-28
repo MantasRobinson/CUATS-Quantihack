@@ -32,13 +32,10 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 from collections import deque
 
-# WebSocket client (same package as the server uses)
-try:
-    import websockets.sync.client as ws_sync
-except ImportError:
-    print("ERROR: 'websockets' package not found.\n"
-          "Install it with:  pip install websockets", file=sys.stderr)
-    sys.exit(1)
+from agents.simulation import Simulation, SimulationConfig
+from agents.market_maker import MarketMakerAgent, MarketMakerConfig
+from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Config
@@ -49,12 +46,13 @@ WINDOW         = 300   # steps of history visible on screen
 FRAME_MS       = 100   # milliseconds between animation frames (~10 fps)
 
 AGENT_COLORS = {
-    "MM":   "#E91E63",
-    "RT-0": "#9C27B0",
-    "RT-1": "#3F51B5",
-    "RT-2": "#009688",
-    "RT-3": "#FF9800",
-    "RT-4": "#795548",
+    "MM":    "#E91E63",
+    "RT-0":  "#9C27B0",
+    "RT-1":  "#3F51B5",
+    "RT-2":  "#009688",
+    "RT-3":  "#FF9800",
+    "RT-4":  "#795548",
+    "MANIP": "#FFD600",
 }
 AGENT_NAMES = ["MM", "RT-0", "RT-1", "RT-2", "RT-3", "RT-4"]
 
@@ -63,34 +61,41 @@ AGENT_NAMES = ["MM", "RT-0", "RT-1", "RT-2", "RT-3", "RT-4"]
 # Background WebSocket receiver thread
 # ─────────────────────────────────────────────────────────────────────
 
-_data_queue: queue.Queue = queue.Queue(maxsize=200)
-_stop_event = threading.Event()
+def build_simulation():
+    sim_cfg = SimulationConfig(num_steps=999_999, asset="ASSET", seed=42)
+    sim = Simulation(sim_cfg)
 
+    mm = MarketMakerAgent(
+        name="MM", asset=sim.asset, orderbook=sim.ob,
+        id_generator=sim.id_generator,
+        config=MarketMakerConfig(
+            fair_value=100.0, half_spread=0.40, quote_size=15,
+            max_inventory=200, skew_factor=0.02, num_levels=5,
+            level_spacing=0.15, fair_value_ema=0.05,
+        ),
+    )
+    sim.add_agent(mm)
 
-def _ws_thread():
-    """Connects to the server, pushes parsed payloads into _data_queue."""
-    while not _stop_event.is_set():
-        try:
-            print(f"[ws] Connecting to {WS_URL} …", flush=True)
-            with ws_sync.connect(WS_URL) as sock:
-                print("[ws] Connected.", flush=True)
-                while not _stop_event.is_set():
-                    raw = sock.recv(timeout=5.0)
-                    try:
-                        payload = json.loads(raw)
-                        # Non-blocking put; drop oldest if full
-                        if _data_queue.full():
-                            try:
-                                _data_queue.get_nowait()
-                            except queue.Empty:
-                                pass
-                        _data_queue.put_nowait(payload)
-                    except Exception:
-                        pass
-        except Exception as exc:
-            if not _stop_event.is_set():
-                print(f"[ws] Disconnected ({exc}). Retrying in 2 s …", flush=True)
-                _stop_event.wait(timeout=2.0)
+    retail_cfgs = [
+        RetailTraderConfig(activity_rate=0.15, min_size=1, max_size=8,
+                           trend_sensitivity=0.2, limit_order_pct=0.6, max_position=50),
+        RetailTraderConfig(activity_rate=0.25, min_size=1, max_size=10,
+                           trend_sensitivity=0.3, limit_order_pct=0.4, max_position=60),
+        RetailTraderConfig(activity_rate=0.35, min_size=1, max_size=12,
+                           trend_sensitivity=0.5, limit_order_pct=0.3, max_position=50),
+        RetailTraderConfig(activity_rate=0.30, min_size=1, max_size=15,
+                           trend_sensitivity=0.6, limit_order_pct=0.2, max_position=40),
+        RetailTraderConfig(activity_rate=0.20, min_size=1, max_size=8,
+                           trend_sensitivity=0.1, limit_order_pct=0.5, max_position=50),
+    ]
+    for i, cfg in enumerate(retail_cfgs):
+        sim.add_agent(RetailTraderAgent(
+            name=f"RT-{i}", asset=sim.asset, orderbook=sim.ob,
+            id_generator=sim.id_generator, config=cfg,
+            rng_seed=sim_cfg.seed + i + 1,
+        ))
+
+    return sim, mm
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -99,8 +104,10 @@ def _ws_thread():
 
 class LiveDashboard:
 
-    def __init__(self):
-        self.seq = 0
+    def __init__(self, sim: Simulation, mm: MarketMakerAgent):
+        self.sim = sim
+        self.mm = mm
+        self.step = 0
         self.prev_trade_count = 0
 
         # Rolling buffers
@@ -172,12 +179,12 @@ class LiveDashboard:
         self.ax_pos.set_ylabel("Position", fontsize=9)
         self.ax_pos.tick_params(labelsize=8)
         self.pos_lines = {}
-        for name in AGENT_NAMES:
-            lw = 2.0 if name == "MM" else 0.8
-            ln, = self.ax_pos.plot([], [], color=AGENT_COLORS.get(name, "#aaa"),
-                                   lw=lw, alpha=1.0 if name == "MM" else 0.65,
-                                   label=name)
-            self.pos_lines[name] = ln
+        for a in self.sim.agents:
+            lw = 2.0 if a.name == "MM" else 0.8
+            al = 1.0 if a.name == "MM" else 0.65
+            ln, = self.ax_pos.plot([], [], color=AGENT_COLORS.get(a.name, "#aaa"),
+                                   lw=lw, alpha=al, label=a.name)
+            self.pos_lines[a.name] = ln
         self.ax_pos.legend(fontsize=7, ncol=3, loc="upper left",
                            facecolor="#1a1a2e", edgecolor="#333")
         self.ax_pos.axhline(0, color="white", lw=0.3, ls="--")
@@ -312,8 +319,10 @@ class LiveDashboard:
             # — Stats —
             mid_s = f"{mid:.3f}" if mid is not None else "---"
             self.stats_txt.set_text(
-                f"  State: {state}  |  Mid {mid_s}  |  Spread {spread_bps:.1f} bps  |  "
-                f"Trades {total_trades:,}  |  MM pos {mm_pos:+d}  |  MM P&L {mm_pnl:+.1f}  "
+                f"  Step {self.step:,}  |  Mid {mid_s}  |  "
+                f"Spread {spread:.3f}  |  Trades {tc:,}  |  "
+                f"MM pos {self.mm.state.position:+d}  "
+                f"fills {self.mm.state.total_fills:,}  "
             )
 
         except Exception:
@@ -339,11 +348,6 @@ class LiveDashboard:
 # ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    t = threading.Thread(target=_ws_thread, daemon=True)
-    t.start()
-
-    dash = LiveDashboard()
-    try:
-        dash.run()
-    finally:
-        _stop_event.set()
+    sim, mm = build_simulation()
+    dash = LiveDashboard(sim, mm)
+    dash.run()

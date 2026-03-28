@@ -1,8 +1,10 @@
-"""Entry point: run a market simulation with MM + retail agents."""
+"""Entry point: run a market simulation with MM + retail + manipulator agents."""
 
 from agents.simulation import Simulation, SimulationConfig
 from agents.market_maker import MarketMakerAgent, MarketMakerConfig
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
+from agents.manipulator import ManipulatorAgent, ManipulatorConfig
+from export import export_simulation
 
 
 def main():
@@ -59,6 +61,23 @@ def main():
         )
         sim.add_agent(rt)
 
+    # --- Manipulator ---
+    manip = ManipulatorAgent(
+        name="MANIP",
+        asset=sim.asset,
+        orderbook=sim.ob,
+        id_generator=sim.id_generator,
+        config=ManipulatorConfig(
+            phase_length=150,
+            spoof_size=80,
+            pump_size=25,
+            dump_size=30,
+            wash_size=5,
+        ),
+        rng_seed=sim_config.seed + 100,
+    )
+    sim.add_agent(manip)
+
     # --- Run ---
     print(f"Running simulation: {sim_config.num_steps} steps, "
           f"asset={sim.asset!r}, {len(sim.agents)} agents")
@@ -89,6 +108,9 @@ def main():
 
     all_trades = sim.get_all_trades()
     print(f"\nTotal trades executed: {len(all_trades)}")
+
+    # --- Export data ---
+    export_simulation(sim)
 
 
 if __name__ == "__main__":
