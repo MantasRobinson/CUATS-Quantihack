@@ -54,7 +54,7 @@ AGENT_COLORS = {
 # ─────────────────────────────────────────────────────────────────────
 
 def build_simulation():
-    sim_cfg = SimulationConfig(num_steps=999_999, asset="ASSET", seed=42)
+    sim_cfg = SimulationConfig(num_steps=999_999, asset="BTC", seed=42)
     sim = Simulation(sim_cfg)
 
     mm = MarketMakerAgent(
@@ -64,21 +64,22 @@ def build_simulation():
             fair_value=100.0, half_spread=0.40, quote_size=15,
             max_inventory=200, skew_factor=0.02, num_levels=5,
             level_spacing=0.15, fair_value_ema=0.05,
+            annual_drift=0.05, annual_vol=0.60,
         ),
     )
     sim.add_agent(mm)
 
     retail_cfgs = [
         RetailTraderConfig(activity_rate=0.15, min_size=1, max_size=8,
-                           trend_sensitivity=0.2, limit_order_pct=0.6, max_position=50),
+                           trend_sensitivity=0.0, limit_order_pct=0.6, max_position=50),
         RetailTraderConfig(activity_rate=0.25, min_size=1, max_size=10,
-                           trend_sensitivity=0.3, limit_order_pct=0.4, max_position=60),
+                           trend_sensitivity=0.0, limit_order_pct=0.4, max_position=60),
         RetailTraderConfig(activity_rate=0.35, min_size=1, max_size=12,
-                           trend_sensitivity=0.5, limit_order_pct=0.3, max_position=50),
+                           trend_sensitivity=0.0, limit_order_pct=0.3, max_position=50),
         RetailTraderConfig(activity_rate=0.30, min_size=1, max_size=15,
-                           trend_sensitivity=0.6, limit_order_pct=0.2, max_position=40),
+                           trend_sensitivity=0.0, limit_order_pct=0.2, max_position=40),
         RetailTraderConfig(activity_rate=0.20, min_size=1, max_size=8,
-                           trend_sensitivity=0.1, limit_order_pct=0.5, max_position=50),
+                           trend_sensitivity=0.0, limit_order_pct=0.5, max_position=50),
     ]
     for i, cfg in enumerate(retail_cfgs):
         sim.add_agent(RetailTraderAgent(
