@@ -141,7 +141,7 @@ class AgentOrderbookSimulator:
     _MM_STRESS = MarketMakerConfig(
         fair_value=100.0, half_spread=0.20, quote_size=5,
         max_inventory=200, skew_factor=0.02, num_levels=2,
-        level_spacing=0.15, fair_value_ema=0.05, drift_std=0.20,
+        level_spacing=0.15, fair_value_ema=0.05,
     )
 
     # Normal retail personalities (mirrors run_simulation.py)
@@ -229,6 +229,8 @@ class AgentOrderbookSimulator:
         self.calm_until   = -1
         self.prev_mid     = 100.0
         self._in_stress   = False
+        self._halt_active = False   # True while monitor state == HALT
+        self._halt_cooldown = 0     # ticks remaining before HALT can re-trigger
 
         print("Warming up agent-driven orderbook (2200 steps)...", flush=True)
         self._warmup()
@@ -266,8 +268,9 @@ class AgentOrderbookSimulator:
         best_bid = ob.get_best_bid(self.ASSET)
         best_ask = ob.get_best_ask(self.ASSET)
 
-        bid = best_bid[0] if best_bid else self.prev_mid - 0.5
-        ask = best_ask[0] if best_ask else self.prev_mid + 0.5
+        # Fallback proportional to mid so spread_bps stays ~20 bps when book is empty
+        bid = best_bid[0] if best_bid else self.prev_mid * 0.9990
+        ask = best_ask[0] if best_ask else self.prev_mid * 1.0010
         mid = (bid + ask) / 2.0
 
         depth   = ob.get_market_depth(self.ASSET, levels=5)
@@ -350,7 +353,14 @@ class AgentOrderbookSimulator:
         latency_ms = (max(1.0, self._rng.gauss(58.0, 12.0)) if in_stress
                       else max(1.0, self._rng.gauss(8.0,  2.0)))
 
-        self._run_agents()
+        if self._halt_active:
+            # Trading is halted — allow passive fills to settle but block new orders
+            for agent in self._sim.agents:
+                agent.reconcile()
+            self.step_count += 1
+        else:
+            self._run_agents()
+
         bid, ask, feat = self._read_book()
 
         self.monitor.on_market(MarketEvent(
@@ -360,9 +370,28 @@ class AgentOrderbookSimulator:
         mm_pnl = self._mm.state.unrealized_pnl(self.prev_mid) if self._mm else 0.0
         self.monitor.on_pnl(PnLEvent(ts=now, realized_pnl=mm_pnl))
 
-        decision = self.monitor.evaluate(now)
-        m        = decision.metrics
-        drift_z  = abs(m.get("ret_1s_z", m.get("imbalance_z", 0.0)))
+        decision  = self.monitor.evaluate(now)
+        new_halt  = decision.action.value == "HALT"
+
+        # Suppress re-HALT during cooldown so agents can re-establish quotes
+        if self._halt_cooldown > 0:
+            self._halt_cooldown -= 1
+            new_halt = False
+
+        if new_halt and not self._halt_active:
+            # Transition INTO halt — cancel every resting order immediately
+            for agent in self._sim.agents:
+                agent.cancel_all_orders()
+            print("  [halt] HALT triggered — all resting orders cancelled, trading suspended.",
+                  flush=True)
+        elif not new_halt and self._halt_active:
+            self._halt_cooldown = 60  # ~6 s at 10 Hz before HALT can re-trigger
+            print("  [halt] HALT cleared — trading resumed (60-step cooldown).", flush=True)
+
+        self._halt_active = new_halt
+
+        m       = decision.metrics
+        drift_z = abs(m.get("ret_1s_z", m.get("imbalance_z", 0.0)))
 
         return {
             "state":   decision.action.value,
@@ -515,7 +544,7 @@ async def _broadcast_loop(source) -> None:
     pid: dict[str, PIDController] = {
         # Kp=0.025 -> ~63% of a step reached in ~1 s at 60 Hz
         # Kd is subtracted (velocity form) -> dampens sharp spikes
-        "spread_bps":   PIDController(0.025, 0.003, 0.00015, 0.0, 400.0, initial=10.0),
+        "spread_bps":   PIDController(0.025, 0.003, 0.00015, 0.0, 100.0, initial=10.0),
         "latency_ms":   PIDController(0.025, 0.003, 0.00015, 0.0, 250.0, initial=8.0),
         "drift_zscore": PIDController(0.030, 0.002, 0.00010, 0.0,  20.0, initial=0.0),
     }
