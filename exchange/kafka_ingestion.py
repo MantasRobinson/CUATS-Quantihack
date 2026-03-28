@@ -503,7 +503,7 @@ class GatewayAdapter:
         return _call_first(
             self.gateway,
             ["set_safe_mode", "safe_mode", "enter_safe_mode", "set_mode", "mode"],
-            "SAFE_MODE",
+            "BORDERLINE",
         )
 
     def set_halt(self) -> Any:
@@ -590,15 +590,15 @@ class ExampleOrderGateway:
         self.trading_enabled = bool(enabled)
         print(f"[gateway] set_trading_enabled({enabled})")
 
-    def set_safe_mode(self, mode: str = "SAFE_MODE") -> None:
+    def set_safe_mode(self, mode: str = "BORDERLINE") -> None:
         self.mode = mode
         print(f"[gateway] set_safe_mode({mode})")
 
     def safe_mode(self) -> None:
-        self.set_safe_mode("SAFE_MODE")
+        self.set_safe_mode("BORDERLINE")
 
     def enter_safe_mode(self) -> None:
-        self.set_safe_mode("SAFE_MODE")
+        self.set_safe_mode("BORDERLINE")
 
     def set_halt(self, mode: str = "HALT") -> None:
         self.mode = mode
@@ -798,14 +798,14 @@ def visualize_decisions(
         return
 
     xs = list(range(1, len(decisions) + 1))
-    action_to_level = {"OK": 0, "ALERT": 1, "SAFE_MODE": 2, "HALT": 3}
+    action_to_level = {"OK": 0, "ALERT": 1, "BORDERLINE": 2, "HALT": 3}
     ys = [action_to_level.get(d.action.value, 0) for d in decisions]
     colors = ["#2ecc71" if y == 0 else "#f39c12" if y == 1 else "#e67e22" if y == 2 else "#e74c3c" for y in ys]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
     ax1.bar(xs, ys, color=colors, width=0.8)
     ax1.set_yticks([0, 1, 2, 3])
-    ax1.set_yticklabels(["OK", "ALERT", "SAFE_MODE", "HALT"])
+    ax1.set_yticklabels(["OK", "ALERT", "BORDERLINE", "HALT"])
     ax1.set_ylabel("Action")
     ax1.set_title(title)
     ax1.grid(axis="y", alpha=0.25)

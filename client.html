@@ -44,7 +44,7 @@ html, body {
 /* ── State backgrounds ─────────────────────────────────────────────── */
 body.s-OK        { background: linear-gradient(150deg,#EDE9FF 0%,#DDD8F5 50%,#C8BEE8 100%); }
 body.s-ALERT     { background: linear-gradient(150deg,#FFF8E8 0%,#F5E8C0 50%,#EDD8A0 100%); }
-body.s-SAFE_MODE { background: linear-gradient(150deg,#FFF0E8 0%,#F5D8B8 50%,#ECC89A 100%); }
+body.s-BORDERLINE { background: linear-gradient(150deg,#FFF0E8 0%,#F5D8B8 50%,#ECC89A 100%); }
 body.s-HALT      { animation: strobe-lt 0.28s steps(1) infinite; }
 @keyframes strobe-lt {
   0%,100% { background: linear-gradient(150deg,#FFE8EE 0%,#F5C0CC 100%); }
@@ -125,7 +125,7 @@ body.show-debug #view-toggle { background: var(--nav); color: #fff; }
 #view-main {
   width: 100vw; height: 100vh;
   display: grid;
-  grid-template-rows: 68px 1fr 72px;
+  grid-template-rows: 68px 1fr;
   grid-template-columns: 260px 1fr 260px;
   gap: 14px; padding: 16px;
 }
@@ -178,7 +178,7 @@ body.show-debug #view-main { display: none; }
 }
 #state-badge.s-OK        { color: #6B5ECD; filter: drop-shadow(0 4px 20px rgba(107,94,205,0.28)); }
 #state-badge.s-ALERT     { color: #D97706; filter: drop-shadow(0 4px 20px rgba(217,119,6,0.30)); }
-#state-badge.s-SAFE_MODE { color: #EA580C; filter: drop-shadow(0 4px 20px rgba(234,88,12,0.30)); }
+#state-badge.s-BORDERLINE { color: #EA580C; filter: drop-shadow(0 4px 20px rgba(234,88,12,0.30)); }
 #state-badge.s-HALT      { color: #DC2626; animation: badge-pulse 0.28s steps(1) infinite; }
 @keyframes badge-pulse {
   0%,100% { filter: drop-shadow(0 4px 28px rgba(220,38,38,0.55)); }
@@ -199,7 +199,7 @@ body.show-debug #view-main { display: none; }
   margin-bottom: 2px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted);
 }
 body.s-ALERT     #state-timer { color: #D97706; }
-body.s-SAFE_MODE #state-timer { color: #EA580C; }
+body.s-BORDERLINE #state-timer { color: #EA580C; }
 body.s-HALT      #state-timer { color: #DC2626; }
 
 /* Reasons */
@@ -220,8 +220,8 @@ body.s-HALT      #state-timer { color: #DC2626; }
 /* Morphing shape canvas */
 #morph-canvas {
   display: block;
-  width: min(32vmin, 400px);
-  height: min(32vmin, 400px);
+  width: min(52vmin, 560px);
+  height: min(52vmin, 560px);
   flex-shrink: 0;
 }
 
@@ -266,7 +266,7 @@ body.s-HALT      #state-timer { color: #DC2626; }
 
 /* Panel shadow by state */
 body.s-ALERT     .panel { box-shadow: 0 8px 32px rgba(217,119,6,0.14); }
-body.s-SAFE_MODE .panel { box-shadow: 0 8px 32px rgba(234,88,12,0.16); }
+body.s-BORDERLINE .panel { box-shadow: 0 8px 32px rgba(234,88,12,0.16); }
 body.s-HALT      .panel { animation: card-pulse 0.28s steps(1) infinite; }
 @keyframes card-pulse {
   0%,100% { box-shadow: 0 8px 40px rgba(220,38,38,0.28); }
@@ -315,7 +315,7 @@ body.show-debug #view-debug { display: block; }
 }
 #state-pill.OK        { background: rgba(107,94,205,0.14); color: #6B5ECD; }
 #state-pill.ALERT     { background: rgba(217,119,6,0.14);  color: #D97706; }
-#state-pill.SAFE_MODE { background: rgba(234,88,12,0.14);  color: #EA580C; }
+#state-pill.BORDERLINE { background: rgba(234,88,12,0.14);  color: #EA580C; }
 #state-pill.HALT      { background: rgba(220,38,38,0.14);  color: #DC2626;
                         animation: blink .4s steps(1) infinite; }
 @keyframes blink { 50% { opacity:.35; } }
@@ -356,7 +356,7 @@ body.show-debug #view-debug { display: block; }
 .ss-block { flex: 1; }
 .ss-OK        { background: #6B5ECD; }
 .ss-ALERT     { background: #D97706; }
-.ss-SAFE_MODE { background: #EA580C; }
+.ss-BORDERLINE { background: #EA580C; }
 .ss-HALT      { background: #DC2626; }
 </style>
 </head>
@@ -436,11 +436,6 @@ body.show-debug #view-debug { display: block; }
     </div>
   </div>
 
-  <div id="main-footer">
-    <span id="ts-display">ts: —</span>
-    <span>PID-smoothed @ 60 Hz  |  ws://localhost:8765</span>
-    <span id="fps-display">0 fps</span>
-  </div>
 
 </div><!-- #view-main -->
 
@@ -567,7 +562,7 @@ let _audioState = 'OK';
 const LOFI_CHORDS = {
   OK:        [['C3','E3','G3','B3'], ['A2','C3','E3','G3'], ['F2','A2','C3','E3'], ['G2','B2','D3','F3']],
   ALERT:     [['D3','F3','A3','C4'], ['G2','B2','D3','Ab3'],['C3','Eb3','G3','Bb3'],['A2','C3','Eb3','G3']],
-  SAFE_MODE: [['B2','D3','F3','Ab3'],['Eb3','Gb3','Bb3','Db4'],['Ab2','C3','Eb3','G3'],['F2','Ab2','Cb3','Eb3']],
+  BORDERLINE: [['B2','D3','F3','Ab3'],['Eb3','Gb3','Bb3','Db4'],['Ab2','C3','Eb3','G3'],['F2','Ab2','Cb3','Eb3']],
   HALT:      [['C3','Db3','F#3','G3'],['F2','B2','C3','F#3'],['E2','Bb2','E3','Bb3'],['Ab2','D3','Ab3','D4']],
 };
 
@@ -575,7 +570,7 @@ const LOFI_CHORDS = {
 const LOFI_MEL = {
   OK:        ['C4',null,'E4',null,'G4',null,null,'A4','G4',null,'E4',null,'D4',null,null,null],
   ALERT:     ['C4',null,'Eb4','D4','G4',null,'Bb4',null,'G4','F4','Eb4',null,'Db4',null,null,null],
-  SAFE_MODE: ['C4','Db4','E4','F4','Gb4','Ab4','Bb4','B4','C5',null,'Ab4',null,'Gb4',null,'Eb4',null],
+  BORDERLINE: ['C4','Db4','E4','F4','Gb4','Ab4','Bb4','B4','C5',null,'Ab4',null,'Gb4',null,'Eb4',null],
   HALT:      ['C5','F#4',null,'B4','Eb5',null,'G#4','C5','Ab4','E5',null,'F4','C#5','G4',null,'D5'],
 };
 
@@ -583,7 +578,7 @@ const LOFI_MEL = {
 const LOFI_BASS = {
   OK:        ['C2',null,null,null,null,null,null,null,'A1',null,null,null,'F1',null,'G1',null],
   ALERT:     ['D2',null,null,null,'G1',null,null,'Ab1','C2',null,null,null,'A1',null,null,null],
-  SAFE_MODE: ['B1',null,'Eb2',null,'Ab1',null,null,'Db2','F1',null,'Bb1',null,'D2',null,null,null],
+  BORDERLINE: ['B1',null,'Eb2',null,'Ab1',null,null,'Db2','F1',null,'Bb1',null,'D2',null,null,null],
   HALT:      ['C2','F#1',null,'B1','Eb2',null,'Ab1',null,'D2','G#1',null,'Db2','E1',null,'Bb1',null],
 };
 
@@ -591,23 +586,39 @@ const LOFI_BASS = {
 const _DK = {  // kick
   OK:        [1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],
   ALERT:     [1,0,0,0,0,0,1,0,1,0,0,0,0,1,0,0],
-  SAFE_MODE: [1,0,1,0,0,0,1,0,0,1,0,0,1,0,0,1],
+  BORDERLINE: [1,0,1,0,0,0,1,0,0,1,0,0,1,0,0,1],
   HALT:      [1,1,0,1,1,0,1,0,0,1,1,0,1,0,1,1],
 };
 const _DS = {  // snare
   OK:        [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0],
   ALERT:     [0,0,0,0,1,0,0,1,0,0,0,0,1,0,1,0],
-  SAFE_MODE: [0,0,1,0,1,0,0,1,0,1,0,0,1,0,1,0],
+  BORDERLINE: [0,0,1,0,1,0,0,1,0,1,0,0,1,0,1,0],
   HALT:      [0,1,0,1,0,1,1,0,1,0,0,1,0,1,0,1],
 };
 const _DH = {  // hi-hat
   OK:        [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0],
   ALERT:     [1,0,1,1,1,0,1,0,1,1,1,0,1,0,1,0],
-  SAFE_MODE: [1,1,1,0,1,1,0,1,1,0,1,1,0,1,1,0],
+  BORDERLINE: [1,1,1,0,1,1,0,1,1,0,1,1,0,1,1,0],
   HALT:      [1,1,0,1,1,1,1,0,0,1,1,1,1,0,1,1],
 };
 
-const LOFI_BPM = { OK: 75, ALERT: 88, SAFE_MODE: 105, HALT: 128 };
+const LOFI_BPM = { OK: 68, ALERT: 94, BORDERLINE: 120, HALT: 155 };
+
+// Per-state effect targets — each state should feel unmistakably different
+const _STATE_FX = {
+  OK:         { filter: 380,  reverb: 0.08, delay: 0.05, delayWet: 0.10,
+                kickVol: -14, padVol: -18, melVol: -26, bassVol: -14,
+                melType: 'triangle', bassType: 'sine',    detune: 0,  padAtk: 0.9, padRel: 2.5 },
+  ALERT:      { filter: 1100, reverb: 0.28, delay: 0.30, delayWet: 0.20,
+                kickVol: -10, padVol: -21, melVol: -23, bassVol: -12,
+                melType: 'triangle', bassType: 'sine',    detune: 0,  padAtk: 0.4, padRel: 1.5 },
+  BORDERLINE: { filter: 2800, reverb: 0.52, delay: 0.60, delayWet: 0.35,
+                kickVol: -7,  padVol: -24, melVol: -20, bassVol: -10,
+                melType: 'sawtooth', bassType: 'sawtooth', detune: 18, padAtk: 0.15, padRel: 0.8 },
+  HALT:       { filter: 6500, reverb: 0.82, delay: 0.88, delayWet: 0.55,
+                kickVol: -3,  padVol: -28, melVol: -17, bassVol: -7,
+                melType: 'sawtooth', bassType: 'sawtooth', detune: 45, padAtk: 0.05, padRel: 0.25 },
+};
 
 async function initAudio() {
   await Tone.start();
@@ -616,7 +627,7 @@ async function initAudio() {
   masterReverb = new Tone.Reverb({ decay: 2.5, wet: 0.35 });
   await masterReverb.ready;
   masterDelay  = new Tone.FeedbackDelay({ delayTime: 0.12, feedback: 0.20, wet: 0.15 });
-  masterFilter = new Tone.Filter({ frequency: 800, type: 'lowpass', rolloff: -24 });
+  masterFilter = new Tone.Filter({ frequency: 380, type: 'lowpass', rolloff: -24 });
   analyser     = new Tone.Analyser('waveform', 128);
 
   masterFilter.connect(masterDelay);
@@ -698,12 +709,36 @@ async function initAudio() {
 function updateAudioState(newState) {
   if (!audioReady || newState === _audioState) return;
   _audioState = newState;
-  const stress = ['OK', 'ALERT', 'SAFE_MODE', 'HALT'].indexOf(newState);
-  Tone.Transport.bpm.rampTo(LOFI_BPM[newState] || 75, 2.5);
-  // Open the filter and add reverb as state worsens (sound becomes harsher/wider)
-  masterFilter.frequency.rampTo(800 + stress * 600, 2.5);
-  masterReverb.wet.rampTo(0.35 + stress * 0.12, 2.5);
-  masterDelay.feedback.rampTo(0.20 + stress * 0.15, 2.5);
+  const fx = _STATE_FX[newState] || _STATE_FX.OK;
+  const r = 2.0;
+
+  Tone.Transport.bpm.rampTo(LOFI_BPM[newState] || 68, r);
+
+  // Effects chain
+  masterFilter.frequency.rampTo(fx.filter, r);
+  masterReverb.wet.rampTo(fx.reverb, r);
+  masterDelay.feedback.rampTo(fx.delay, r);
+  masterDelay.wet.rampTo(fx.delayWet, r);
+
+  // Instrument volumes
+  kick.volume.rampTo(fx.kickVol, r);
+  pad.volume.rampTo(fx.padVol, r);
+  mel.volume.rampTo(fx.melVol, r);
+  bass.volume.rampTo(fx.bassVol, r);
+
+  // Oscillator types (timbre shift: warm triangle → harsh sawtooth)
+  mel.oscillator.type  = fx.melType;
+  bass.oscillator.type = fx.bassType;
+
+  // Detune mel for dissonance in bad states
+  mel.detune.rampTo(fx.detune, r);
+
+  // Pad envelope: slow lush in OK → sharp staccato in HALT
+  pad.set({ envelope: { attack: fx.padAtk, release: fx.padRel } });
+
+  // Mel envelope: smooth in OK → staccato in HALT
+  mel.envelope.decay   = newState === 'HALT' ? 0.04 : newState === 'BORDERLINE' ? 0.10 : 0.15;
+  mel.envelope.release = newState === 'HALT' ? 0.08 : newState === 'BORDERLINE' ? 0.25 : 0.50;
 }
 
 document.getElementById('mute-btn').addEventListener('click', () => {
@@ -901,7 +936,7 @@ function applyPayload(data) {
   if (audioReady) {
     if (Tone.getContext().state !== 'running') Tone.getContext().resume();
     if (state !== lastState) updateAudioState(state);
-    const stress = ['OK','ALERT','SAFE_MODE','HALT'].indexOf(state);
+    const stress = ['OK','ALERT','BORDERLINE','HALT'].indexOf(state);
     const bits   = Math.max(2, 8 - stress * 2);
     setEl('val-filter', (LOFI_BPM[state] || 75) + ' bpm');
     setEl('val-reverb', bits + ' bit');
@@ -1044,20 +1079,20 @@ const _MH_FREQS = [1, 2, 3, 5, 7, 9, 11, 13];
 const _MH_AMP = {
   OK:        [0.048, 0.022, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000],
   ALERT:     [0.068, 0.042, 0.028, 0.010, 0.000, 0.000, 0.000, 0.000],
-  SAFE_MODE: [0.092, 0.038, 0.062, 0.046, 0.026, 0.010, 0.000, 0.000],
+  BORDERLINE: [0.092, 0.038, 0.062, 0.046, 0.026, 0.010, 0.000, 0.000],
   HALT:      [0.115, 0.028, 0.095, 0.082, 0.062, 0.045, 0.032, 0.022],
 };
-const _MH_SPD = { OK: 0.28, ALERT: 0.85, SAFE_MODE: 2.10, HALT: 5.80 };
+const _MH_SPD = { OK: 0.28, ALERT: 0.85, BORDERLINE: 2.10, HALT: 5.80 };
 
 // RGB colour stops: [inner-bright, mid, outer-deep]
 const _MH_RGB = {
   OK:        [[182,170,255],[107, 94,205],[ 45, 35,130]],
   ALERT:     [[253,230,138],[217,119,  6],[120, 53,  4]],
-  SAFE_MODE: [[254,215,170],[234, 88, 12],[100, 30,  5]],
+  BORDERLINE: [[254,215,170],[234, 88, 12],[100, 30,  5]],
   HALT:      [[252,165,165],[220, 38, 38],[100, 10, 10]],
 };
 
-const _MH_STATES = ['OK','ALERT','SAFE_MODE','HALT'];
+const _MH_STATES = ['OK','ALERT','BORDERLINE','HALT'];
 let _mhStress = 0;   // continuous 0–3, eased toward target
 let _mhTime   = 0;
 let _mhPrevTs = null;

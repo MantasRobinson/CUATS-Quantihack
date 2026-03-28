@@ -143,7 +143,8 @@ class LiveDashboard:
         if mm_cfg is not None:
             sizes.append(getattr(mm_cfg, "quote_size", 0))
 
-        manip_cfg = getattr(self.manip, "config", None)
+        manip = next((a for a in self.sim.agents if type(a).__name__ == 'ManipulatorAgent'), None)
+        manip_cfg = getattr(manip, "config", None)
         if manip_cfg is not None:
             sizes.extend([
                 getattr(manip_cfg, "spoof_size", 0),

@@ -13,7 +13,7 @@ import time
 class Action(str, Enum):
     OK = "OK"
     ALERT = "ALERT"
-    SAFE_MODE = "SAFE_MODE"
+    SAFE_MODE = "BORDERLINE"
     HALT = "HALT"
 
 
