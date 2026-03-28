@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Synesthetic Orderbook</title>
+<script src="https://cdn.jsdelivr.net/npm/tone@14/build/Tone.js"></script>
+<style>
+  /* ── Reset & base ─────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #020c05;
+    --glow:      #00ff88;
+    --panel-bg:  rgba(0,0,0,0.55);
+    --border:    rgba(0,255,136,0.18);
+    --text:      #c8fde0;
+    --dim:       rgba(200,253,224,0.45);
+    --trans:     background 1.4s ease, box-shadow 1.4s ease, border-color 0.8s ease;
+  }
+
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg);
+    transition: background 1.4s ease;
+  }
+
+  /* ── State-driven ambient backgrounds ─────────────────────────── */
+  body.s-OK        { background: #00150a; }
+  body.s-ALERT     { background: #150a00; }
+  body.s-SAFE_MODE { background: #150200; }
+  body.s-HALT      { animation: strobe 0.28s steps(1, end) infinite; }
+
+  @keyframes strobe {
+    0%   { background: #3d0000; }
+    50%  { background: #000000; }
+    100% { background: #3d0000; }
+  }
+
+  /* ── Overlay (click-to-start) ─────────────────────────────────── */
+  #overlay {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #000;
+    cursor: pointer;
+    transition: opacity 0.6s ease;
+  }
+  #overlay h1 {
+    font-size: 2.2rem; letter-spacing: 0.18em;
+    color: #00ff88; text-shadow: 0 0 30px #00ff8888;
+    margin-bottom: 1.2rem;
+  }
+  #overlay p {
+    color: rgba(200,253,224,0.55); font-size: 0.95rem;
+    letter-spacing: 0.1em;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+
+  /* ── Main layout ──────────────────────────────────────────────── */
+  #app {
+    width: 100vw; height: 100vh;
+    display: grid;
+    grid-template-rows: 60px 1fr 80px;
+    grid-template-columns: 240px 1fr 240px;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  /* ── Header ───────────────────────────────────────────────────── */
+  #header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
+  #header .title {
+    font-size: 1.3rem; letter-spacing: 0.2em;
+    color: var(--glow); text-shadow: 0 0 18px #00ff8866;
+  }
+  #conn-status {
+    font-size: 0.78rem; letter-spacing: 0.1em;
+    padding: 4px 10px; border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--dim);
+  }
+  #conn-status.live  { color: #00ff88; border-color: #00ff8866; }
+  #conn-status.error { color: #ff4444; border-color: #ff444466; }
+
+  /* ── Panels (shared) ──────────────────────────────────────────── */
+  .panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    backdrop-filter: blur(4px);
+    transition: var(--trans);
+  }
+  .panel-label {
+    font-size: 0.7rem; letter-spacing: 0.15em;
+    color: var(--dim); margin-bottom: 10px;
+    text-transform: uppercase;
+  }
+
+  /* ── State badge (centre top) ─────────────────────────────────── */
+  #state-panel {
+    grid-column: 2 / 3; grid-row: 2 / 3;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 22px;
+  }
+  #state-badge {
+    font-size: 3.4rem; font-weight: bold; letter-spacing: 0.25em;
+    color: var(--glow);
+    text-shadow: 0 0 40px currentColor;
+    transition: color 0.8s ease, text-shadow 0.8s ease;
+  }
+  #state-badge.s-OK        { color: #00ff88; }
+  #state-badge.s-ALERT     { color: #ffaa00; }
+  #state-badge.s-SAFE_MODE { color: #ff5500; }
+  #state-badge.s-HALT      { color: #ff1111; animation: badge-pulse 0.28s steps(1) infinite; }
+  @keyframes badge-pulse {
+    0%   { text-shadow: 0 0 60px #ff1111cc; }
+    50%  { text-shadow: 0 0 8px  #ff111133; }
+    100% { text-shadow: 0 0 60px #ff1111cc; }
+  }
+
+  /* ── Reasons list ─────────────────────────────────────────────── */
+  #reasons-list {
+    list-style: none; width: 100%; max-width: 520px;
+    min-height: 80px;
+  }
+  #reasons-list li {
+    font-size: 0.8rem; letter-spacing: 0.05em;
+    color: var(--dim); padding: 3px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  #reasons-list li:last-child { border-bottom: none; }
+  #reasons-list li.new {
+    color: #ffcc44; animation: fade-in 1s ease forwards;
+  }
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateX(8px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  /* ── Left panel: audio controls ──────────────────────────────────*/
+  #audio-panel { grid-column: 1; grid-row: 2; }
+  .ctrl-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .ctrl-name { font-size: 0.75rem; color: var(--dim); }
+  .ctrl-val  { font-size: 0.95rem; color: var(--glow); min-width: 70px; text-align: right; }
+
+  .bar-wrap { width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; margin-top: 5px; }
+  .bar      { height: 100%; border-radius: 3px; transition: width 0.3s ease, background 0.6s ease; }
+
+  .audio-toggle {
+    width: 100%; padding: 8px; margin-top: 10px;
+    background: rgba(0,255,136,0.1); border: 1px solid #00ff8844;
+    color: #00ff88; font-family: inherit; font-size: 0.8rem;
+    letter-spacing: 0.12em; cursor: pointer; border-radius: 4px;
+    transition: background 0.3s;
+  }
+  .audio-toggle:hover { background: rgba(0,255,136,0.22); }
+
+  /* ── Right panel: raw metrics ─────────────────────────────────── */
+  #metrics-panel { grid-column: 3; grid-row: 2; }
+  .metric-row { margin-bottom: 16px; }
+  .metric-name { font-size: 0.72rem; color: var(--dim); margin-bottom: 4px; }
+  .metric-val  {
+    font-size: 1.6rem; font-weight: bold;
+    color: var(--glow); transition: color 0.6s ease;
+  }
+  .metric-unit { font-size: 0.72rem; color: var(--dim); margin-left: 4px; }
+
+  /* ── Footer / timestamp ───────────────────────────────────────── */
+  #footer {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; justify-content: space-between;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    font-size: 0.72rem; color: var(--dim);
+  }
+
+  /* ── Glow border on panels changes with state ─────────────────── */
+  body.s-ALERT     .panel { border-color: rgba(255,170,0,0.25); }
+  body.s-SAFE_MODE .panel { border-color: rgba(255,85,0,0.28);  }
+  body.s-HALT      .panel { border-color: rgba(255,17,17,0.35); }
+
+  /* ── Canvas: simple oscilloscope ─────────────────────────────── */
+  #scope-wrap { position: relative; width: 100%; height: 50px; margin-top: 10px; }
+  #scope { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body class="s-OK">
+
+<!-- ── Click-to-start overlay ─────────────────────────────────────────────── -->
+<div id="overlay">
+  <h1>THE SYNESTHETIC ORDERBOOK</h1>
+  <p>click anywhere to activate audio &amp; visual feed</p>
+</div>
+
+<!-- ── Main application ────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Header -->
+  <div id="header">
+    <span class="title">THE SYNESTHETIC ORDERBOOK</span>
+    <span id="conn-status">DISCONNECTED</span>
+  </div>
+
+  <!-- Left: Audio mapping panel -->
+  <div class="panel" id="audio-panel">
+    <div class="panel-label">Audio Mapping</div>
+
+    <div class="ctrl-row">
+      <span class="ctrl-name">Filter Cutoff</span>
+      <span class="ctrl-val" id="val-filter">—</span>
+    </div>
+    <div class="bar-wrap"><div class="bar" id="bar-filter" style="width:20%;background:#00ff88"></div></div>
+
+    <div class="ctrl-row" style="margin-top:14px">
+      <span class="ctrl-name">Reverb Decay</span>
+      <span class="ctrl-val" id="val-reverb">—</span>
+    </div>
+    <div class="bar-wrap"><div class="bar" id="bar-reverb" style="width:5%;background:#44aaff"></div></div>
+
+    <div class="ctrl-row" style="margin-top:14px">
+      <span class="ctrl-name">Detune</span>
+      <span class="ctrl-val" id="val-detune">—</span>
+    </div>
+    <div class="bar-wrap"><div class="bar" id="bar-detune" style="width:0%;background:#ff88aa"></div></div>
+
+    <div class="ctrl-row" style="margin-top:14px">
+      <span class="ctrl-name">Chord</span>
+      <span class="ctrl-val" id="val-chord">—</span>
+    </div>
+
+    <button class="audio-toggle" id="mute-btn">MUTE AUDIO</button>
+
+    <!-- Mini oscilloscope -->
+    <div id="scope-wrap">
+      <canvas id="scope"></canvas>
+    </div>
+  </div>
+
+  <!-- Centre: State + reasons -->
+  <div id="state-panel">
+    <div id="state-badge" class="s-OK">OK</div>
+    <ul id="reasons-list">
+      <li style="color:var(--dim);font-style:italic">Awaiting feed…</li>
+    </ul>
+  </div>
+
+  <!-- Right: Smoothed metrics -->
+  <div class="panel" id="metrics-panel">
+    <div class="panel-label">Smoothed Metrics</div>
+
+    <div class="metric-row">
+      <div class="metric-name">SPREAD</div>
+      <div><span class="metric-val" id="m-spread">—</span><span class="metric-unit">bps</span></div>
+    </div>
+    <div class="metric-row">
+      <div class="metric-name">VENUE LATENCY</div>
+      <div><span class="metric-val" id="m-latency">—</span><span class="metric-unit">ms</span></div>
+    </div>
+    <div class="metric-row">
+      <div class="metric-name">DRIFT Z-SCORE</div>
+      <div><span class="metric-val" id="m-zscore">—</span><span class="metric-unit">σ</span></div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div id="footer">
+    <span id="ts-display">ts: —</span>
+    <span>PID-smoothed @ 60 Hz  |  ws://localhost:8765</span>
+    <span id="fps-display">0 fps</span>
+  </div>
+
+</div><!-- #app -->
+
+<script>
+'use strict';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────────
+const WS_URL = 'ws://localhost:8765';
+let synth, filter, delay, reverb, analyser, muted = false;
+let ws = null, reconnTimer = null;
+let lastState = 'OK';
+let fpsCount = 0, fpsLast = performance.now();
+let audioReady = false;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio Setup  (Tone.js)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Action → chord notes
+const CHORDS = {
+  OK:        ['C3', 'G3', 'E4'],          // C major – open, bright
+  ALERT:     ['A2', 'C3', 'Eb3'],         // A minor – tense
+  SAFE_MODE: ['F#2', 'A2', 'C3'],         // F# dim  – ominous
+  HALT:      [],                           // silence
+};
+
+// Action → oscillator types
+const OSC_TYPES = {
+  OK:        'sine',
+  ALERT:     'triangle',
+  SAFE_MODE: 'sawtooth',
+  HALT:      'sine',
+};
+
+async function initAudio() {
+  await Tone.start();
+
+  // Signal chain: PolySynth → Filter → Delay → Reverb → Destination
+  reverb = new Tone.Reverb({ decay: 1.5, wet: 0.35 }).toDestination();
+  await reverb.ready;
+
+  delay = new Tone.FeedbackDelay({ delayTime: 0.1, feedback: 0.25, wet: 0.2 })
+    .connect(reverb);
+
+  filter = new Tone.Filter({ frequency: 800, type: 'lowpass', rolloff: -24 })
+    .connect(delay);
+
+  analyser = new Tone.Analyser('waveform', 128);
+  filter.connect(analyser);
+
+  synth = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: 'sine' },
+    envelope:   { attack: 0.6, decay: 0.3, sustain: 0.85, release: 2.5 },
+    volume:     -18,
+  }).connect(filter);
+
+  // Start in OK chord
+  playChord('OK');
+  audioReady = true;
+  drawScope();
+}
+
+let currentChord = [];
+function playChord(state) {
+  if (!synth) return;
+  if (muted) return;
+
+  const notes = CHORDS[state] || [];
+  // Release old notes
+  if (currentChord.length) {
+    synth.releaseAll(Tone.now());
+  }
+  currentChord = notes;
+  if (notes.length) {
+    // Stagger the attack slightly for a more natural chord feel
+    notes.forEach((n, i) => synth.triggerAttack(n, Tone.now() + i * 0.05));
+    // Update oscillator type
+    // PolySynth doesn't expose per-voice type directly; we set it at construction.
+    // We vary the synth's detune instead.
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mapping functions  (raw metrics → audio parameters)
+// ─────────────────────────────────────────────────────────────────────────────
+function spreadToFilterHz(spread_bps) {
+  // 0–300 bps  →  200–9000 Hz
+  const t = Math.min(Math.max(spread_bps, 0) / 300, 1);
+  return 200 + t * 8800;
+}
+
+function latencyToReverbDecay(latency_ms) {
+  // 0–200 ms  →  0.15–10 s decay
+  const t = Math.min(Math.max(latency_ms, 0) / 200, 1);
+  return 0.15 + t * 9.85;
+}
+
+function latencyToDelayTime(latency_ms) {
+  // 0–200 ms  →  0.02–0.6 s delay
+  const t = Math.min(Math.max(latency_ms, 0) / 200, 1);
+  return 0.02 + t * 0.58;
+}
+
+function zscoreToDetune(zscore) {
+  // 0–20  →  0–250 cents (always positive → detune up for tension)
+  return Math.min(Math.abs(zscore), 20) / 20 * 250;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Apply incoming WebSocket data to audio + visuals
+// ─────────────────────────────────────────────────────────────────────────────
+function applyPayload(data) {
+  const { state, reasons, smoothed_metrics: m } = data;
+
+  // ── Audio ───────────────────────────────────────────────────────
+  if (audioReady && !muted) {
+    const filterHz    = spreadToFilterHz(m.spread_bps);
+    const reverbDecay = latencyToReverbDecay(m.latency_ms);
+    const delayTime   = latencyToDelayTime(m.latency_ms);
+    const detune      = zscoreToDetune(m.drift_zscore);
+    const rampTime    = 0.15;  // seconds — prevents audio clipping
+
+    filter.frequency.rampTo(filterHz,    rampTime);
+    reverb.decay = Math.max(0.01, reverbDecay);   // Reverb.decay is not rampable
+    delay.delayTime.rampTo(delayTime,    rampTime);
+    synth.set({ detune });
+
+    // Update chord on state change
+    if (state !== lastState) {
+      playChord(state);
+    }
+
+    // UI: audio values
+    setEl('val-filter', filterHz.toFixed(0) + ' Hz');
+    setEl('val-reverb', reverbDecay.toFixed(2) + ' s');
+    setEl('val-detune', detune.toFixed(1) + ' ¢');
+    setEl('val-chord',  state === 'HALT' ? 'SILENCE' : CHORDS[state]?.join(' ') ?? '—');
+
+    setBar('bar-filter', (filterHz - 200) / 8800, '#00ff88');
+    setBar('bar-reverb', (reverbDecay - 0.15) / 9.85, '#44aaff');
+    setBar('bar-detune', detune / 250, '#ff88aa');
+  }
+
+  // ── Visual / DOM ────────────────────────────────────────────────
+  if (state !== lastState) {
+    document.body.className   = 's-' + state;
+    const badge               = document.getElementById('state-badge');
+    badge.textContent         = state.replace('_', ' ');
+    badge.className           = 's-' + state;
+    lastState = state;
+  }
+
+  // Metrics display
+  setEl('m-spread',  m.spread_bps.toFixed(1));
+  setEl('m-latency', m.latency_ms.toFixed(1));
+  setEl('m-zscore',  m.drift_zscore.toFixed(2));
+
+  // Colour metrics by severity
+  colourMetric('m-spread',  m.spread_bps,   40,  80);
+  colourMetric('m-latency', m.latency_ms,   35,  75);
+  colourMetric('m-zscore',  m.drift_zscore,  5,   8);
+
+  // Reasons list
+  const ul = document.getElementById('reasons-list');
+  if (reasons.length === 0) {
+    ul.innerHTML = '<li style="color:var(--dim);font-style:italic">No active alerts</li>';
+  } else {
+    ul.innerHTML = reasons
+      .map(r => `<li class="new">${escHtml(r)}</li>`)
+      .join('');
+  }
+
+  // Timestamp
+  const d = new Date(data.timestamp * 1000);
+  setEl('ts-display', 'ts: ' + d.toISOString().slice(11, 23));
+
+  // FPS counter
+  fpsCount++;
+  const now = performance.now();
+  if (now - fpsLast >= 1000) {
+    setEl('fps-display', fpsCount + ' fps');
+    fpsCount = 0; fpsLast = now;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mini oscilloscope
+// ─────────────────────────────────────────────────────────────────────────────
+function drawScope() {
+  const canvas = document.getElementById('scope');
+  const ctx    = canvas.getContext('2d');
+  canvas.width  = canvas.offsetWidth  * window.devicePixelRatio;
+  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+
+  function frame() {
+    ctx.clearRect(0, 0, W, H);
+    if (analyser && audioReady && !muted) {
+      const buf = analyser.getValue();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(0,255,136,0.6)';
+      ctx.lineWidth   = 1;
+      for (let i = 0; i < buf.length; i++) {
+        const x = (i / (buf.length - 1)) * W;
+        const y = ((buf[i] + 1) / 2) * H;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    } else {
+      // flat line when muted / audio off
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(0,255,136,0.18)';
+      ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2);
+      ctx.stroke();
+    }
+    requestAnimationFrame(frame);
+  }
+  frame();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket connection management
+// ─────────────────────────────────────────────────────────────────────────────
+function connect() {
+  if (ws) ws.close();
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    const el = document.getElementById('conn-status');
+    el.textContent = 'LIVE';
+    el.className   = 'live';
+    if (reconnTimer) { clearTimeout(reconnTimer); reconnTimer = null; }
+  };
+
+  ws.onmessage = (ev) => {
+    try {
+      const data = JSON.parse(ev.data);
+      applyPayload(data);
+    } catch (e) { console.warn('Parse error:', e); }
+  };
+
+  ws.onerror = ws.onclose = () => {
+    const el = document.getElementById('conn-status');
+    el.textContent = 'RECONNECTING…';
+    el.className   = 'error';
+    // Exponential-ish back-off: try again in 2 s
+    if (!reconnTimer) reconnTimer = setTimeout(connect, 2000);
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Overlay click → start everything
+// ─────────────────────────────────────────────────────────────────────────────
+document.getElementById('overlay').addEventListener('click', async () => {
+  const overlay = document.getElementById('overlay');
+  overlay.classList.add('hidden');
+  setTimeout(() => overlay.style.display = 'none', 700);
+
+  await initAudio();
+  connect();
+});
+
+// Mute toggle
+document.getElementById('mute-btn').addEventListener('click', () => {
+  muted = !muted;
+  document.getElementById('mute-btn').textContent = muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO';
+  if (muted && synth) {
+    synth.releaseAll();
+    currentChord = [];
+  } else if (!muted && synth) {
+    playChord(lastState);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Utility helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function setEl(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+
+function setBar(id, fraction, colour) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.width      = (Math.min(Math.max(fraction, 0), 1) * 100).toFixed(1) + '%';
+  el.style.background = colour;
+}
+
+function colourMetric(id, value, alertThresh, haltThresh) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (value >= haltThresh)  el.style.color = '#ff3333';
+  else if (value >= alertThresh) el.style.color = '#ffaa00';
+  else                      el.style.color = '#00ff88';
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
