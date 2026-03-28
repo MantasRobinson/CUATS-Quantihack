@@ -27,6 +27,7 @@ from collections import deque
 from agents.simulation import Simulation, SimulationConfig
 from agents.market_maker import MarketMakerAgent, MarketMakerConfig
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
+from agents.manipulator import ManipulatorAgent, ManipulatorConfig
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -38,12 +39,13 @@ STEPS_PER_FRAME = 3     # sim steps computed per animation frame
 FRAME_MS       = 80     # milliseconds between frames (~12 fps)
 
 AGENT_COLORS = {
-    "MM":   "#E91E63",
-    "RT-0": "#9C27B0",
-    "RT-1": "#3F51B5",
-    "RT-2": "#009688",
-    "RT-3": "#FF9800",
-    "RT-4": "#795548",
+    "MM":    "#E91E63",
+    "RT-0":  "#9C27B0",
+    "RT-1":  "#3F51B5",
+    "RT-2":  "#009688",
+    "RT-3":  "#FF9800",
+    "RT-4":  "#795548",
+    "MANIP": "#FFD600",
 }
 
 
@@ -85,7 +87,18 @@ def build_simulation():
             rng_seed=sim_cfg.seed + i + 1,
         ))
 
-    return sim, mm
+    manip = ManipulatorAgent(
+        name="MANIP", asset=sim.asset, orderbook=sim.ob,
+        id_generator=sim.id_generator,
+        config=ManipulatorConfig(
+            phase_length=150, spoof_size=80, pump_size=25,
+            dump_size=30, wash_size=5,
+        ),
+        rng_seed=sim_cfg.seed + 100,
+    )
+    sim.add_agent(manip)
+
+    return sim, mm, manip
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -94,9 +107,10 @@ def build_simulation():
 
 class LiveDashboard:
 
-    def __init__(self, sim: Simulation, mm: MarketMakerAgent):
+    def __init__(self, sim: Simulation, mm: MarketMakerAgent, manip: ManipulatorAgent):
         self.sim = sim
         self.mm = mm
+        self.manip = manip
         self.step = 0
         self.prev_trade_count = 0
 
@@ -171,8 +185,8 @@ class LiveDashboard:
         self.ax_pos.tick_params(labelsize=8)
         self.pos_lines = {}
         for a in self.sim.agents:
-            lw = 2.0 if a.name == "MM" else 0.8
-            al = 1.0 if a.name == "MM" else 0.65
+            lw = 2.0 if a.name in ("MM", "MANIP") else 0.8
+            al = 1.0 if a.name in ("MM", "MANIP") else 0.65
             ln, = self.ax_pos.plot([], [], color=AGENT_COLORS.get(a.name, "#aaa"),
                                    lw=lw, alpha=al, label=a.name)
             self.pos_lines[a.name] = ln
@@ -332,7 +346,9 @@ class LiveDashboard:
                 f"  Step {self.step:,}  |  Mid {mid_s}  |  "
                 f"Spread {spread:.3f}  |  Trades {tc:,}  |  "
                 f"MM pos {self.mm.state.position:+d}  "
-                f"fills {self.mm.state.total_fills:,}  "
+                f"fills {self.mm.state.total_fills:,}  |  "
+                f"MANIP pos {self.manip.state.position:+d}  "
+                f"phase {self.manip._current_phase}  "
             )
 
         except Exception:
@@ -355,6 +371,6 @@ class LiveDashboard:
 # ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    sim, mm = build_simulation()
-    dash = LiveDashboard(sim, mm)
+    sim, mm, manip = build_simulation()
+    dash = LiveDashboard(sim, mm, manip)
     dash.run()
