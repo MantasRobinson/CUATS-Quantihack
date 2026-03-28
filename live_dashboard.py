@@ -36,7 +36,7 @@ from collections import deque
 from agents.simulation import Simulation, SimulationConfig
 from agents.market_maker import MarketMakerAgent, MarketMakerConfig
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
-from agents.manipulator import ManipulatorAgent
+from agents.manipulator import ManipulatorAgent, ManipulatorConfig
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ def build_simulation(num_mm: int = 1, num_retail: int = 5, num_manip: int = 0):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Dashboard
+# Dashboard class
 # ─────────────────────────────────────────────────────────────────────
 
 class LiveDashboard:
@@ -141,9 +141,12 @@ class LiveDashboard:
 
     def _build_figure(self):
         plt.style.use("dark_background")
+
+        # Small figsize — let the window manager scale it up
         self.fig = plt.figure(figsize=(14, 8))
         self.fig.patch.set_facecolor("#0D1117")
 
+        # Maximize the window immediately so it fills the screen
         try:
             mgr = plt.get_current_fig_manager()
             mgr.window.state("zoomed")
@@ -182,7 +185,7 @@ class LiveDashboard:
         self.ln_spread, = self.ax_spread.plot([], [], color="#4CAF50", lw=0.9)
         self.ax_spread.grid(True, alpha=0.12)
 
-        # — Trade rate —
+        # ── Panel 3: Trade rate ──
         self.ax_rate = self.fig.add_subplot(gs[1, 1])
         self.ax_rate.set_title("Trade Rate", fontsize=12, color="#90CAF9", pad=8)
         self.ax_rate.set_ylabel("Trades / step", fontsize=9)
@@ -190,7 +193,7 @@ class LiveDashboard:
         self.ln_rate, = self.ax_rate.plot([], [], color="#FF5722", lw=0.9)
         self.ax_rate.grid(True, alpha=0.12)
 
-        # — Positions —
+        # ── Panel 4: Positions ──
         self.ax_pos = self.fig.add_subplot(gs[2, 0])
         self.ax_pos.set_title("Agent Inventory", fontsize=12, color="#90CAF9", pad=8)
         self.ax_pos.set_ylabel("Position", fontsize=9)
@@ -209,7 +212,7 @@ class LiveDashboard:
         self.ax_pos.axhline(0, color="white", lw=0.3, ls="--")
         self.ax_pos.grid(True, alpha=0.12)
 
-        # — Depth —
+        # ── Panel 5: Depth ──
         self.ax_depth = self.fig.add_subplot(gs[2, 1])
         self.ax_depth.set_title("Order Book Depth", fontsize=12, color="#90CAF9", pad=8)
         self.ax_depth.tick_params(labelsize=8)
@@ -226,6 +229,7 @@ class LiveDashboard:
     # ── Simulation tick ──────────────────────────────────────────────
 
     def _tick(self):
+        """Run one simulation step and record data."""
         self.sim._rng.shuffle(self.sim.agents)
         for agent in self.sim.agents:
             agent.step(self.step)
@@ -271,6 +275,7 @@ class LiveDashboard:
             vm = [(s, m) for s, m in zip(x, self.mids) if m is not None]
             vb = [(s, b) for s, b in zip(x, self.bids) if b is not None]
             va = [(s, a) for s, a in zip(x, self.asks) if a is not None]
+
             if vm:
                 xs, ys = zip(*vm)
                 self.ln_mid.set_data(xs, ys)
@@ -334,7 +339,7 @@ class LiveDashboard:
                                   alpha=0.85, label="Asks")
             if bp or ap:
                 allp = bp + ap
-                self.ax_depth.set_xlim(min(allp) - 0.3, max(allp) + 0.3)
+                self.ax_depth.set_xlim(min(allp) - 0.5, max(allp) + 0.5)
                 self.ax_depth.legend(fontsize=7, facecolor="#1a1a2e",
                                      edgecolor="#333")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -20,8 +21,9 @@ class MarketMakerConfig:
     num_levels: int = 3             # number of price levels to quote on each side
     level_spacing: float = 0.20     # additional spread between successive levels
     fair_value_ema: float = 0.1     # EMA weight for updating fair value from trades
-    drift_std: float = 0.03         # random walk std dev per step (adds organic movement)
-    anchor_strength: float = 0.005  # mean-reversion pull toward initial fair value
+    annual_drift: float = 0.05      # risk-free rate (annual, e.g. 0.05 = 5%)
+    annual_vol: float = 0.60        # annualised volatility (BTC-like)
+    steps_per_year: int = 5040      # sim steps per year (for dt calculation)
 
 
 class MarketMakerAgent(BaseAgent):
@@ -92,24 +94,29 @@ class MarketMakerAgent(BaseAgent):
                 self.submit_order("limit", "sell", cfg.quote_size, ask_price)
 
     def _update_fair_value(self) -> None:
-        """Update fair value from last trade price via EMA.
+        """Update fair value using geometric Brownian motion with risk-free drift.
 
-        Uses trade prices rather than mid-price to avoid a feedback loop
-        where the MM's own quotes shift the mid, which then shifts fair value.
-        Also adds a small random drift for organic price movement.
+        The fair value follows a GBM process:
+            S(t+1) = S(t) * exp((mu - sigma^2/2)*dt + sigma*sqrt(dt)*Z)
+
+        Also blends in the last trade price via EMA to keep the MM responsive
+        to actual market activity.
         """
+        cfg = self.config
+        dt = 1.0 / cfg.steps_per_year
+        mu = cfg.annual_drift
+        sigma = cfg.annual_vol
+
+        # GBM step: multiplicative random walk with drift
+        drift = (mu - 0.5 * sigma * sigma) * dt
+        diffusion = sigma * math.sqrt(dt) * self._rng.gauss(0, 1)
+        self._fair_value *= math.exp(drift + diffusion)
+
+        # Blend with last trade price (EMA) to stay responsive to market
         trades = self.get_recent_trades(1)
         if trades:
             last_price = trades[0].price
-            alpha = self.config.fair_value_ema
+            alpha = cfg.fair_value_ema
             self._fair_value = alpha * last_price + (1.0 - alpha) * self._fair_value
 
-        # Mean-reversion pull toward initial fair value (prevents runaway drift)
-        if self.config.anchor_strength > 0:
-            anchor = self.config.fair_value
-            self._fair_value += self.config.anchor_strength * (anchor - self._fair_value)
-
-        # Small random walk for organic movement
-        if self.config.drift_std > 0:
-            self._fair_value += self._rng.gauss(0, self.config.drift_std)
-            self._fair_value = max(1.0, self._fair_value)  # floor at 1.0
+        self._fair_value = max(1.0, self._fair_value)  # floor at 1.0

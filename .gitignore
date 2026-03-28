@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+sim_output_*.json
+simulation_dashboard.png

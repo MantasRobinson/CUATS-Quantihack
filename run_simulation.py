@@ -9,7 +9,7 @@ from export import export_simulation
 
 def main():
     # --- Configuration ---
-    sim_config = SimulationConfig(num_steps=2000, asset="ASSET", seed=42)
+    sim_config = SimulationConfig(num_steps=2000, asset="BTC", seed=42)
     sim = Simulation(sim_config)
 
     # --- Market Maker ---
@@ -27,6 +27,8 @@ def main():
             num_levels=5,
             level_spacing=0.15,
             fair_value_ema=0.05,
+            annual_drift=0.05,
+            annual_vol=0.60,
         ),
     )
     sim.add_agent(mm)
@@ -35,19 +37,19 @@ def main():
     retail_configs = [
         # Cautious, low activity, mostly limit orders
         RetailTraderConfig(activity_rate=0.15, min_size=1, max_size=8,
-                           trend_sensitivity=0.2, limit_order_pct=0.6, max_position=50),
+                           trend_sensitivity=0.0, limit_order_pct=0.6, max_position=50),
         # Average retail
         RetailTraderConfig(activity_rate=0.25, min_size=1, max_size=10,
-                           trend_sensitivity=0.3, limit_order_pct=0.4, max_position=60),
-        # Active trader, moderate trend chaser
+                           trend_sensitivity=0.0, limit_order_pct=0.4, max_position=60),
+        # Active trader
         RetailTraderConfig(activity_rate=0.35, min_size=1, max_size=12,
-                           trend_sensitivity=0.5, limit_order_pct=0.3, max_position=50),
-        # FOMO buyer — more trend sensitive, market orders
+                           trend_sensitivity=0.0, limit_order_pct=0.3, max_position=50),
+        # Aggressive random trader
         RetailTraderConfig(activity_rate=0.30, min_size=1, max_size=15,
-                           trend_sensitivity=0.6, limit_order_pct=0.2, max_position=40),
-        # Contrarian — low trend sensitivity (mostly noise)
+                           trend_sensitivity=0.0, limit_order_pct=0.2, max_position=40),
+        # Passive random trader
         RetailTraderConfig(activity_rate=0.20, min_size=1, max_size=8,
-                           trend_sensitivity=0.1, limit_order_pct=0.5, max_position=50),
+                           trend_sensitivity=0.0, limit_order_pct=0.5, max_position=50),
     ]
 
     for i, cfg in enumerate(retail_configs):
