@@ -336,7 +336,10 @@ class LiveDashboard:
             sp = list(self.spreads)
             self.ln_spread.set_data(x, sp)
             self.ax_spread.set_xlim(x[0], x[-1])
-            self.ax_spread.set_ylim(0, max(max(sp) * 1.3, 0.1) if sp else 1)
+            if sp:
+                sp_min, sp_max = min(sp), max(sp)
+                sp_pad = max(sp_max - sp_min, sp_max * 0.01) * 0.15
+                self.ax_spread.set_ylim(sp_min - sp_pad, sp_max + sp_pad)
 
             # — Trade rate (smoothed) —
             rates = list(self.trade_rate)
@@ -358,7 +361,7 @@ class LiveDashboard:
             self.ax_pos.set_xlim(x[0], x[-1])
             if all_p:
                 lo, hi = min(all_p), max(all_p)
-                pad = max(abs(hi - lo), 10) * 0.15
+                pad = max(abs(hi - lo), 1) * 0.12
                 self.ax_pos.set_ylim(lo - pad, hi + pad)
 
             # — Depth (full redraw) —

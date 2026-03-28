@@ -83,11 +83,11 @@ def build_agent_sim_thresholds() -> Thresholds:
         max_drawdown=1e18,
         hard_drawdown=1e18,
         psi_alert=1.5,          # loose — only genuine regime shifts trigger ALERT
-        psi_halt=4.0,           # very loose — only extreme distributional breaks
+        psi_halt=0,#4.0,           # very loose — only extreme distributional breaks
         min_reference_points=200,
         min_live_points=80,
         zscore_alert=8.0,
-        zscore_halt=18.0,
+        zscore_halt=0,#18.0,
         max_spread_bps=150.0,   # stress MM quotes ~40 bps, give headroom
     )
 
