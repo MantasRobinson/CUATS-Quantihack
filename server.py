@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import importlib
 import json
 import os
 import queue
@@ -39,6 +40,7 @@ except ImportError:
           "Install it with:  pip install websockets", file=sys.stderr)
     sys.exit(1)
 
+from agents.manipulator import ManipulatorAgent, ManipulatorConfig
 from agents.market_maker import MarketMakerAgent, MarketMakerConfig
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.simulation import Simulation, SimulationConfig
@@ -169,20 +171,32 @@ class AgentOrderbookSimulator:
                            trend_sensitivity=0.80, limit_order_pct=0.1, max_position=50),
     ]
 
-    def __init__(self, seed: int = 42) -> None:
+    def __init__(
+        self, seed: int = 42,
+        num_mm: int = 1, num_retail: int = 5, num_manip: int = 0,
+    ) -> None:
         self._rng = random.Random(seed)
 
         # ── agent simulation ─────────────────────────────────────────────
         self._sim = Simulation(SimulationConfig(asset=self.ASSET, seed=seed))
 
-        self._mm = MarketMakerAgent(
-            "MM", self.ASSET, self._sim.ob, self._sim.id_generator,
-            config=dataclasses.replace(self._MM_NORMAL),
-        )
-        self._sim.add_agent(self._mm)
+        # Market makers — single MM keeps name "MM" for backward compat
+        self._mm_agents: list[MarketMakerAgent] = []
+        for i in range(max(num_mm, 0)):
+            name = "MM" if num_mm == 1 else f"MM-{i}"
+            mm = MarketMakerAgent(
+                name, self.ASSET, self._sim.ob, self._sim.id_generator,
+                config=dataclasses.replace(self._MM_NORMAL),
+            )
+            self._sim.add_agent(mm)
+            self._mm_agents.append(mm)
+        # Convenience reference for PnL / backward-compat fields
+        self._mm = self._mm_agents[0] if self._mm_agents else None
 
+        # Retail traders — cycle through personality presets if more than 5 requested
         self._retail: list[RetailTraderAgent] = []
-        for i, cfg in enumerate(self._RETAIL_NORMAL):
+        for i in range(max(num_retail, 0)):
+            cfg = self._RETAIL_NORMAL[i % len(self._RETAIL_NORMAL)]
             rt = RetailTraderAgent(
                 f"RT-{i}", self.ASSET, self._sim.ob, self._sim.id_generator,
                 config=dataclasses.replace(cfg),
@@ -190,6 +204,17 @@ class AgentOrderbookSimulator:
             )
             self._sim.add_agent(rt)
             self._retail.append(rt)
+
+        # Manipulators
+        self._manip: list[ManipulatorAgent] = []
+        for i in range(max(num_manip, 0)):
+            name = "MANIP" if num_manip == 1 else f"MANIP-{i}"
+            ma = ManipulatorAgent(
+                name, self.ASSET, self._sim.ob, self._sim.id_generator,
+                rng_seed=seed + 1000 + i,
+            )
+            self._sim.add_agent(ma)
+            self._manip.append(ma)
 
         # ── risk monitor ─────────────────────────────────────────────────
         self.thresholds = Thresholds()
@@ -227,12 +252,14 @@ class AgentOrderbookSimulator:
             return
         self._in_stress = in_stress
         mm_cfg = self._MM_STRESS if in_stress else self._MM_NORMAL
-        for field in dataclasses.fields(mm_cfg):
-            setattr(self._mm.config, field.name, getattr(mm_cfg, field.name))
+        for mm in self._mm_agents:
+            for field in dataclasses.fields(mm_cfg):
+                setattr(mm.config, field.name, getattr(mm_cfg, field.name))
         retail_cfgs = self._RETAIL_STRESS if in_stress else self._RETAIL_NORMAL
-        for rt, cfg in zip(self._retail, retail_cfgs):
-            for field in dataclasses.fields(cfg):
-                setattr(rt.config, field.name, getattr(cfg, field.name))
+        for i, rt in enumerate(self._retail):
+            cfg_preset = retail_cfgs[i % len(retail_cfgs)]
+            for field in dataclasses.fields(cfg_preset):
+                setattr(rt.config, field.name, getattr(cfg_preset, field.name))
 
     def _read_book(self) -> tuple[float, float, dict]:
         ob       = self._sim.ob
@@ -263,7 +290,7 @@ class AgentOrderbookSimulator:
                 ts=ts, bid=bid, ask=ask, features=feat, venue_latency_ms=latency_ms,
             ))
             self.monitor.on_order(OrderEvent(ts=ts, accepted=True))
-            mm_pnl = self._mm.state.unrealized_pnl(self.prev_mid)
+            mm_pnl = self._mm.state.unrealized_pnl(self.prev_mid) if self._mm else 0.0
             self.monitor.on_pnl(PnLEvent(ts=ts, realized_pnl=mm_pnl))
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -282,14 +309,22 @@ class AgentOrderbookSimulator:
 
         depth  = ob.get_market_depth(self.ASSET, levels=5)
 
+        all_agents = (
+            [(mm.name, mm.state) for mm in self._mm_agents] +
+            [(rt.name, rt.state) for rt in self._retail] +
+            [(ma.name, ma.state) for ma in self._manip]
+        )
         return {
             "bid":              round(bid, 3) if bid else None,
             "ask":              round(ask, 3) if ask else None,
             "mid":              round(mid, 3),
             "total_trades":     len(ob._trades),
-            "mm_position":      self._mm.state.position,
-            "mm_pnl":           round(self._mm.state.unrealized_pnl(mid), 2),
+            "mm_position":      self._mm.state.position if self._mm else 0,
+            "mm_pnl":           round(self._mm.state.unrealized_pnl(mid), 2) if self._mm else 0.0,
             "retail_positions": [rt.state.position for rt in self._retail],
+            "manip_positions":  [ma.state.position for ma in self._manip],
+            "agent_pnls":       [{"name": n, "pnl": round(s.unrealized_pnl(mid), 2)}
+                                 for n, s in all_agents],
             "recent_trades":    trades,
             "depth_bids":       [[p, v] for p, v in depth["bids"]],
             "depth_asks":       [[p, v] for p, v in depth["asks"]],
@@ -322,7 +357,7 @@ class AgentOrderbookSimulator:
             ts=now, bid=bid, ask=ask, features=feat, venue_latency_ms=latency_ms,
         ))
         self.monitor.on_order(OrderEvent(ts=now, accepted=True))
-        mm_pnl = self._mm.state.unrealized_pnl(self.prev_mid)
+        mm_pnl = self._mm.state.unrealized_pnl(self.prev_mid) if self._mm else 0.0
         self.monitor.on_pnl(PnLEvent(ts=now, realized_pnl=mm_pnl))
 
         decision = self.monitor.evaluate(now)
@@ -378,15 +413,46 @@ class KafkaSource:
         topic    = os.getenv("KAFKA_TOPIC",    "market-events")
         group_id = os.getenv("KAFKA_GROUP_ID", "qrm-server")
 
-        def _consume():
-            consumer = create_consumer(brokers, topic, group_id,
-                                       poll_timeout_ms=200)
-            for event_type, event in iter_events(consumer):
-                self._queue.put((event_type, event))
+        # Preflight: check the broker is reachable before starting the server.
+        print(f"[kafka] Checking broker at {brokers} …", flush=True)
+        try:
+            kafka_mod = importlib.import_module("kafka")
+            probe = kafka_mod.KafkaAdminClient(
+                bootstrap_servers=[b.strip() for b in brokers.split(",") if b.strip()],
+                request_timeout_ms=4000,
+            )
+            probe.close()
+            print(f"[kafka] Broker reachable.", flush=True)
+        except Exception as exc:
+            print(
+                f"\n[kafka] Cannot reach broker at {brokers}:\n"
+                f"  {exc}\n\n"
+                f"Start a Kafka/Redpanda broker, or set KAFKA_BROKERS to the\n"
+                f"correct address, then restart the server.\n"
+                f"To use the built-in agent simulation instead, run:\n"
+                f"  python server.py --source agents\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-        t = threading.Thread(target=_consume, daemon=True)
+        def _consume():
+            retry_delay = 2.0
+            while True:
+                try:
+                    consumer = create_consumer(brokers, topic, group_id,
+                                               poll_timeout_ms=200)
+                    print(f"[kafka] Consuming from {topic}", flush=True)
+                    retry_delay = 2.0
+                    for event_type, event in iter_events(consumer):
+                        self._queue.put((event_type, event))
+                except Exception as exc:
+                    print(f"[kafka] Lost connection ({exc}). Retrying in {retry_delay:.0f}s…",
+                          flush=True)
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
+
+        t = threading.Thread(target=_consume, daemon=True, name="kafka-consumer")
         t.start()
-        print(f"Kafka source: consuming from {brokers} / {topic}", flush=True)
 
     def tick(self) -> dict:
         now = time.time()
@@ -507,9 +573,8 @@ async def _handler(websocket) -> None:
         print(f"[ws] Client disconnected - {len(_clients)} remaining", flush=True)
 
 
-async def _main(source) -> None:
+async def _main(source, src_label: str) -> None:
     loop_task = asyncio.create_task(_broadcast_loop(source))
-    src_label = "Kafka" if isinstance(source, KafkaSource) else "MM + 5 Retail agents"
     async with ws_serve(_handler, HOST, PORT):
         print(f"+----------------------------------------------+")
         print(f"|    The Synesthetic Orderbook - Server        |")
@@ -525,21 +590,34 @@ async def _main(source) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="The Synesthetic Orderbook server")
     parser.add_argument(
-        "--source",
-        choices=["agents", "kafka"],
-        default="agents",
-        help="Data source: 'agents' (default) runs the built-in agent simulation; "
-             "'kafka' consumes live market events from a Kafka/Redpanda topic "
-             "(configure via KAFKA_BROKERS / KAFKA_TOPIC env vars).",
+        "--source", choices=["agents", "kafka"], default="agents",
+        help="Data source (default: agents). 'kafka' reads from a Kafka/Redpanda "
+             "topic — configure via KAFKA_BROKERS / KAFKA_TOPIC env vars.",
+    )
+    parser.add_argument(
+        "--mm", type=int, default=1, metavar="N",
+        help="Number of market-maker agents (default: 1, agents source only)",
+    )
+    parser.add_argument(
+        "--retail", type=int, default=5, metavar="N",
+        help="Number of retail-trader agents (default: 5, agents source only)",
+    )
+    parser.add_argument(
+        "--manip", type=int, default=0, metavar="N",
+        help="Number of market-manipulator agents (default: 0, agents source only)",
     )
     args = parser.parse_args()
 
     if args.source == "kafka":
         source = KafkaSource()
+        src_label = "Kafka"
     else:
-        source = AgentOrderbookSimulator()
+        source = AgentOrderbookSimulator(
+            num_mm=args.mm, num_retail=args.retail, num_manip=args.manip,
+        )
+        src_label = (f"{args.mm} MM  {args.retail} Retail  {args.manip} Manip")
 
     try:
-        asyncio.run(_main(source))
+        asyncio.run(_main(source, src_label))
     except KeyboardInterrupt:
         print("\nServer stopped.")
