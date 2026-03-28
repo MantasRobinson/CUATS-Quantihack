@@ -340,6 +340,25 @@ async function initAudio() {
     volume:     -18,
   }).connect(filter);
 
+  // Resume chord whenever the AudioContext comes back from suspension.
+  // Browsers (especially Chrome) suspend the context when the tab is
+  // backgrounded or after a period of inactivity — without this the
+  // audio silently dies and never restarts.
+  Tone.getContext().rawContext.addEventListener('statechange', () => {
+    if (Tone.getContext().state === 'running' && audioReady && !muted) {
+      if (currentChord.length === 0) playChord(lastState);
+    }
+  });
+
+  // Also resume when the tab becomes visible again.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && audioReady && !muted) {
+      Tone.getContext().resume().then(() => {
+        if (currentChord.length === 0) playChord(lastState);
+      });
+    }
+  });
+
   // Start in OK chord
   playChord('OK');
   audioReady = true;
@@ -400,6 +419,14 @@ function applyPayload(data) {
 
   // ── Audio ───────────────────────────────────────────────────────
   if (audioReady && !muted) {
+    // If the browser suspended the AudioContext (tab backgrounded, idle
+    // policy, etc.) kick it back to life before touching any parameters.
+    if (Tone.getContext().state !== 'running') {
+      Tone.getContext().resume().then(() => {
+        if (currentChord.length === 0) playChord(lastState);
+      });
+    }
+
     const filterHz    = spreadToFilterHz(m.spread_bps);
     const reverbDecay = latencyToReverbDecay(m.latency_ms);
     const delayTime   = latencyToDelayTime(m.latency_ms);
