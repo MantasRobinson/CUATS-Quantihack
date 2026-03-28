@@ -5,252 +5,332 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>The Synesthetic Orderbook</title>
 <script src="https://cdn.jsdelivr.net/npm/tone@14/build/Tone.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
-  /* ── Reset & base ─────────────────────────────────────────────── */
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Reset & base ──────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  :root {
-    --bg:        #020c05;
-    --glow:      #00ff88;
-    --panel-bg:  rgba(0,0,0,0.55);
-    --border:    rgba(0,255,136,0.18);
-    --text:      #c8fde0;
-    --dim:       rgba(200,253,224,0.45);
-    --trans:     background 1.4s ease, box-shadow 1.4s ease, border-color 0.8s ease;
-  }
+:root {
+  --bg:       #020c05;
+  --glow:     #00ff88;
+  --panel-bg: rgba(0,0,0,0.55);
+  --border:   rgba(0,255,136,0.18);
+  --text:     #c8fde0;
+  --dim:      rgba(200,253,224,0.45);
+  --trans:    background 1.4s ease, box-shadow 1.4s ease, border-color 0.8s ease;
+}
 
-  html, body {
-    width: 100%; height: 100%;
-    overflow: hidden;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 14px;
-    color: var(--text);
-    background: var(--bg);
-    transition: background 1.4s ease;
-  }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  transition: background 1.4s ease;
+}
 
-  /* ── State-driven ambient backgrounds ─────────────────────────── */
-  body.s-OK        { background: #00150a; }
-  body.s-ALERT     { background: #150a00; }
-  body.s-SAFE_MODE { background: #150200; }
-  body.s-HALT      { animation: strobe 0.28s steps(1, end) infinite; }
+/* ── State-driven ambient backgrounds ─────────────────────────────── */
+body.s-OK        { background: #00150a; }
+body.s-ALERT     { background: #150a00; }
+body.s-SAFE_MODE { background: #150200; }
+body.s-HALT      { animation: strobe 0.28s steps(1, end) infinite; }
+@keyframes strobe { 0%,100% { background:#3d0000; } 50% { background:#000; } }
 
-  @keyframes strobe {
-    0%   { background: #3d0000; }
-    50%  { background: #000000; }
-    100% { background: #3d0000; }
-  }
+/* ── Overlay ───────────────────────────────────────────────────────── */
+#overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: #000; cursor: pointer;
+  transition: opacity 0.6s ease;
+}
+#overlay h1 {
+  font-size: 2.2rem; letter-spacing: 0.18em;
+  color: #00ff88; text-shadow: 0 0 30px #00ff8888;
+  margin-bottom: 1.2rem;
+}
+#overlay p { color: rgba(200,253,224,0.55); font-size: 0.95rem; letter-spacing: 0.1em; }
+#overlay.hidden { opacity: 0; pointer-events: none; }
 
-  /* ── Overlay (click-to-start) ─────────────────────────────────── */
-  #overlay {
-    position: fixed; inset: 0; z-index: 9999;
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    background: #000;
-    cursor: pointer;
-    transition: opacity 0.6s ease;
-  }
-  #overlay h1 {
-    font-size: 2.2rem; letter-spacing: 0.18em;
-    color: #00ff88; text-shadow: 0 0 30px #00ff8888;
-    margin-bottom: 1.2rem;
-  }
-  #overlay p {
-    color: rgba(200,253,224,0.55); font-size: 0.95rem;
-    letter-spacing: 0.1em;
-  }
-  #overlay.hidden { opacity: 0; pointer-events: none; }
+/* ── View toggle button (always on top) ───────────────────────────── */
+#view-toggle {
+  position: fixed; top: 14px; right: 14px; z-index: 9000;
+  padding: 6px 14px; border-radius: 4px;
+  background: rgba(0,255,136,0.1); border: 1px solid #00ff8855;
+  color: #00ff88; font-family: inherit; font-size: 0.75rem;
+  letter-spacing: 0.12em; cursor: pointer;
+  transition: background 0.25s, border-color 0.25s;
+  display: none;  /* shown after overlay dismissed */
+}
+#view-toggle:hover { background: rgba(0,255,136,0.22); border-color: #00ff8888; }
+body.show-debug #view-toggle {
+  background: rgba(0,255,136,0.2); border-color: #00ff88aa; color: #00ff88;
+}
+#view-toggle .kbd {
+  margin-left: 6px; font-size: 0.65rem; opacity: 0.6;
+  border: 1px solid currentColor; border-radius: 2px; padding: 0 3px;
+}
 
-  /* ── Main layout ──────────────────────────────────────────────── */
-  #app {
-    width: 100vw; height: 100vh;
-    display: grid;
-    grid-template-rows: 60px 1fr 80px;
-    grid-template-columns: 240px 1fr 240px;
-    gap: 12px;
-    padding: 14px;
-  }
+/* ══════════════════════════════════════════════════════════════════
+   MAIN (AUDIO/VISUAL) VIEW
+   ══════════════════════════════════════════════════════════════════ */
+#view-main {
+  width: 100vw; height: 100vh;
+  display: grid;
+  grid-template-rows: 60px 1fr 80px;
+  grid-template-columns: 240px 1fr 240px;
+  gap: 12px; padding: 14px;
+}
+body.show-debug #view-main { display: none; }
 
-  /* ── Header ───────────────────────────────────────────────────── */
-  #header {
-    grid-column: 1 / -1;
-    display: flex; align-items: center; justify-content: space-between;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 10px;
-  }
-  #header .title {
-    font-size: 1.3rem; letter-spacing: 0.2em;
-    color: var(--glow); text-shadow: 0 0 18px #00ff8866;
-  }
-  #conn-status {
-    font-size: 0.78rem; letter-spacing: 0.1em;
-    padding: 4px 10px; border-radius: 4px;
-    border: 1px solid var(--border);
-    color: var(--dim);
-  }
-  #conn-status.live  { color: #00ff88; border-color: #00ff8866; }
-  #conn-status.error { color: #ff4444; border-color: #ff444466; }
+/* Header */
+#main-header {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border); padding-bottom: 10px;
+}
+#main-header .title {
+  font-size: 1.3rem; letter-spacing: 0.2em;
+  color: var(--glow); text-shadow: 0 0 18px #00ff8866;
+}
+#conn-status {
+  font-size: 0.78rem; letter-spacing: 0.1em; padding: 4px 10px;
+  border-radius: 4px; border: 1px solid var(--border); color: var(--dim);
+}
+#conn-status.live  { color: #00ff88; border-color: #00ff8866; }
+#conn-status.error { color: #ff4444; border-color: #ff444466; }
 
-  /* ── Panels (shared) ──────────────────────────────────────────── */
-  .panel {
-    background: var(--panel-bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
-    backdrop-filter: blur(4px);
-    transition: var(--trans);
-  }
-  .panel-label {
-    font-size: 0.7rem; letter-spacing: 0.15em;
-    color: var(--dim); margin-bottom: 10px;
-    text-transform: uppercase;
-  }
+/* Panels */
+.panel {
+  background: var(--panel-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 14px 16px;
+  backdrop-filter: blur(4px); transition: var(--trans);
+}
+.panel-label {
+  font-size: 0.7rem; letter-spacing: 0.15em; color: var(--dim);
+  margin-bottom: 10px; text-transform: uppercase;
+}
 
-  /* ── State badge (centre top) ─────────────────────────────────── */
-  #state-panel {
-    grid-column: 2 / 3; grid-row: 2 / 3;
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    gap: 22px;
-  }
-  #state-badge {
-    font-size: 3.4rem; font-weight: bold; letter-spacing: 0.25em;
-    color: var(--glow);
-    text-shadow: 0 0 40px currentColor;
-    transition: color 0.8s ease, text-shadow 0.8s ease;
-  }
-  #state-badge.s-OK        { color: #00ff88; }
-  #state-badge.s-ALERT     { color: #ffaa00; }
-  #state-badge.s-SAFE_MODE { color: #ff5500; }
-  #state-badge.s-HALT      { color: #ff1111; animation: badge-pulse 0.28s steps(1) infinite; }
-  @keyframes badge-pulse {
-    0%   { text-shadow: 0 0 60px #ff1111cc; }
-    50%  { text-shadow: 0 0 8px  #ff111133; }
-    100% { text-shadow: 0 0 60px #ff1111cc; }
-  }
+/* State badge */
+#state-panel {
+  grid-column: 2 / 3; grid-row: 2 / 3;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 22px;
+}
+#state-badge {
+  font-size: 3.4rem; font-weight: bold; letter-spacing: 0.25em;
+  color: var(--glow); text-shadow: 0 0 40px currentColor;
+  transition: color 0.8s ease, text-shadow 0.8s ease;
+}
+#state-badge.s-OK        { color: #00ff88; }
+#state-badge.s-ALERT     { color: #ffaa00; }
+#state-badge.s-SAFE_MODE { color: #ff5500; }
+#state-badge.s-HALT      { color: #ff1111; animation: badge-pulse 0.28s steps(1) infinite; }
+@keyframes badge-pulse {
+  0%,100% { text-shadow: 0 0 60px #ff1111cc; }
+  50%     { text-shadow: 0 0 8px  #ff111133; }
+}
 
-  /* ── Reasons list ─────────────────────────────────────────────── */
-  #reasons-list {
-    list-style: none; width: 100%; max-width: 520px;
-    min-height: 80px;
-  }
-  #reasons-list li {
-    font-size: 0.8rem; letter-spacing: 0.05em;
-    color: var(--dim); padding: 3px 0;
-    border-bottom: 1px solid var(--border);
-  }
-  #reasons-list li:last-child { border-bottom: none; }
-  #reasons-list li.new {
-    color: #ffcc44; animation: fade-in 1s ease forwards;
-  }
-  @keyframes fade-in {
-    from { opacity: 0; transform: translateX(8px); }
-    to   { opacity: 1; transform: translateX(0); }
-  }
+/* Reasons */
+#reasons-list { list-style: none; width: 100%; max-width: 520px; min-height: 80px; }
+#reasons-list li {
+  font-size: 0.8rem; letter-spacing: 0.05em; color: var(--dim);
+  padding: 3px 0; border-bottom: 1px solid var(--border);
+}
+#reasons-list li:last-child { border-bottom: none; }
+#reasons-list li.new { color: #ffcc44; animation: fade-in 1s ease forwards; }
+@keyframes fade-in { from { opacity:0; transform:translateX(8px); } to { opacity:1; transform:none; } }
 
-  /* ── Left panel: audio controls ──────────────────────────────────*/
-  #audio-panel { grid-column: 1; grid-row: 2; }
-  .ctrl-row {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 14px;
-  }
-  .ctrl-name { font-size: 0.75rem; color: var(--dim); }
-  .ctrl-val  { font-size: 0.95rem; color: var(--glow); min-width: 70px; text-align: right; }
+/* Audio panel */
+#audio-panel { grid-column: 1; grid-row: 2; }
+.ctrl-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.ctrl-name { font-size: 0.75rem; color: var(--dim); }
+.ctrl-val  { font-size: 0.95rem; color: var(--glow); min-width: 70px; text-align: right; }
+.bar-wrap  { width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; margin-top: 5px; }
+.bar       { height: 100%; border-radius: 3px; transition: width 0.3s ease, background 0.6s ease; }
+.audio-toggle {
+  width: 100%; padding: 8px; margin-top: 10px;
+  background: rgba(0,255,136,0.1); border: 1px solid #00ff8844;
+  color: #00ff88; font-family: inherit; font-size: 0.8rem;
+  letter-spacing: 0.12em; cursor: pointer; border-radius: 4px; transition: background 0.3s;
+}
+.audio-toggle:hover { background: rgba(0,255,136,0.22); }
 
-  .bar-wrap { width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; margin-top: 5px; }
-  .bar      { height: 100%; border-radius: 3px; transition: width 0.3s ease, background 0.6s ease; }
+/* Metrics panel */
+#metrics-panel { grid-column: 3; grid-row: 2; }
+.metric-row { margin-bottom: 16px; }
+.metric-name { font-size: 0.72rem; color: var(--dim); margin-bottom: 4px; }
+.metric-val  { font-size: 1.6rem; font-weight: bold; color: var(--glow); transition: color 0.6s ease; }
+.metric-unit { font-size: 0.72rem; color: var(--dim); margin-left: 4px; }
 
-  .audio-toggle {
-    width: 100%; padding: 8px; margin-top: 10px;
-    background: rgba(0,255,136,0.1); border: 1px solid #00ff8844;
-    color: #00ff88; font-family: inherit; font-size: 0.8rem;
-    letter-spacing: 0.12em; cursor: pointer; border-radius: 4px;
-    transition: background 0.3s;
-  }
-  .audio-toggle:hover { background: rgba(0,255,136,0.22); }
+/* Footer */
+#main-footer {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; justify-content: space-between;
+  border-top: 1px solid var(--border); padding-top: 10px;
+  font-size: 0.72rem; color: var(--dim);
+}
 
-  /* ── Right panel: raw metrics ─────────────────────────────────── */
-  #metrics-panel { grid-column: 3; grid-row: 2; }
-  .metric-row { margin-bottom: 16px; }
-  .metric-name { font-size: 0.72rem; color: var(--dim); margin-bottom: 4px; }
-  .metric-val  {
-    font-size: 1.6rem; font-weight: bold;
-    color: var(--glow); transition: color 0.6s ease;
-  }
-  .metric-unit { font-size: 0.72rem; color: var(--dim); margin-left: 4px; }
+/* Panel glow by state */
+body.s-ALERT     .panel { border-color: rgba(255,170,0,0.25); }
+body.s-SAFE_MODE .panel { border-color: rgba(255,85,0,0.28); }
+body.s-HALT      .panel { border-color: rgba(255,17,17,0.35); }
 
-  /* ── Footer / timestamp ───────────────────────────────────────── */
-  #footer {
-    grid-column: 1 / -1;
-    display: flex; align-items: center; justify-content: space-between;
-    border-top: 1px solid var(--border);
-    padding-top: 10px;
-    font-size: 0.72rem; color: var(--dim);
-  }
+/* Oscilloscope */
+#scope-wrap { position: relative; width: 100%; height: 50px; margin-top: 10px; }
+#scope { width: 100%; height: 100%; display: block; }
 
-  /* ── Glow border on panels changes with state ─────────────────── */
-  body.s-ALERT     .panel { border-color: rgba(255,170,0,0.25); }
-  body.s-SAFE_MODE .panel { border-color: rgba(255,85,0,0.28);  }
-  body.s-HALT      .panel { border-color: rgba(255,17,17,0.35); }
 
-  /* ── Canvas: simple oscilloscope ─────────────────────────────── */
-  #scope-wrap { position: relative; width: 100%; height: 50px; margin-top: 10px; }
-  #scope { width: 100%; height: 100%; display: block; }
+/* ══════════════════════════════════════════════════════════════════
+   DEBUG VIEW
+   ══════════════════════════════════════════════════════════════════ */
+#view-debug {
+  display: none;
+  width: 100vw; height: 100vh;
+  background: #0d0d0d; color: #c8fde0;
+  font-family: 'Courier New', monospace; font-size: 13px;
+  overflow: hidden;
+}
+body.show-debug #view-debug { display: block; }
+
+#dbg-root {
+  display: grid;
+  grid-template-rows: 38px 1fr 1fr 110px;
+  grid-template-columns: 1fr 1fr 220px;
+  gap: 6px; padding: 6px;
+  height: 100vh;
+}
+
+/* Header */
+#dbg-header {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 16px;
+  border-bottom: 1px solid #1a3a28; padding-bottom: 6px;
+}
+#dbg-header .title { font-size: 1rem; color: #00ff88; letter-spacing: .15em; }
+#state-pill {
+  padding: 2px 10px; border-radius: 3px; font-size: .75rem;
+  letter-spacing: .12em; border: 1px solid #00ff8844;
+  background: #001a0d; color: #00ff88;
+  transition: background .4s, color .4s, border-color .4s;
+}
+#state-pill.OK        { color:#00ff88; border-color:#00ff8866; background:#001a0d; }
+#state-pill.ALERT     { color:#ffaa00; border-color:#ffaa0066; background:#1a0d00; }
+#state-pill.SAFE_MODE { color:#ff5500; border-color:#ff550066; background:#1a0500; }
+#state-pill.HALT      { color:#ff1111; border-color:#ff111166; background:#1a0000;
+                        animation: blink .4s steps(1) infinite; }
+@keyframes blink { 50% { opacity:.3; } }
+#dbg-conn-pill {
+  margin-left: auto; padding: 2px 10px; border-radius: 3px;
+  font-size: .7rem; letter-spacing: .1em; color: #555; border: 1px solid #333;
+}
+#dbg-conn-pill.live  { color: #00ff88; border-color: #00ff8844; }
+#dbg-conn-pill.error { color: #ff4444; border-color: #ff444444; }
+.hstat { font-size: .72rem; color: #80c9a0; }
+.hstat span { color: #c8fde0; margin-left: 4px; }
+
+/* Panels */
+.dbg-panel {
+  background: #111; border: 1px solid #1a3a28;
+  border-radius: 5px; padding: 8px; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.dbg-panel-title {
+  font-size: .68rem; color: #4a8a6a; letter-spacing: .12em;
+  text-transform: uppercase; margin-bottom: 5px; flex-shrink: 0;
+}
+.chart-wrap { flex: 1; min-height: 0; position: relative; }
+
+#price-panel  { grid-column: 1 / 3; }
+#pos-panel    { grid-column: 3; grid-row: 2; }
+#spread-panel { grid-column: 1; grid-row: 3; }
+#depth-panel  { grid-column: 2; grid-row: 3; }
+#stats-panel  { grid-column: 3; grid-row: 3; }
+
+.stat-row { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1a3a28; }
+.stat-row:last-child { border-bottom: none; }
+.stat-label { color: #4a8a6a; }
+.stat-val   { color: #c8fde0; }
+.stat-val.red   { color: #ff5555; }
+.stat-val.green { color: #00ff88; }
+.stat-val.amber { color: #ffaa00; }
+
+#trades-panel { grid-column: 1 / -1; grid-row: 4; }
+#trades-wrap  { flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+.trade-row {
+  display: grid; grid-template-columns: 70px 1fr 70px 80px 1fr;
+  gap: 6px; font-size: .7rem; padding: 1px 4px;
+  border-radius: 2px; animation: slide-in .3s ease;
+}
+@keyframes slide-in { from { opacity:0; transform:translateX(-8px); } }
+.trade-row.buy  { border-left: 2px solid #00ff88; background: #001a0d44; }
+.trade-row.sell { border-left: 2px solid #ff5555; background: #1a000044; }
+.side-buy  { color: #00ff88; }
+.side-sell { color: #ff5555; }
+.trade-hdr {
+  display: grid; grid-template-columns: 70px 1fr 70px 80px 1fr;
+  gap: 6px; font-size: .65rem; color: #4a8a6a; padding: 0 4px 3px;
+  border-bottom: 1px solid #1a3a28; flex-shrink: 0;
+}
+
+/* State strip */
+#state-strip-wrap { display: flex; height: 6px; flex-shrink: 0; margin-bottom: 3px; gap: 1px; }
+.ss-block { flex: 1; border-radius: 1px; }
+.ss-OK        { background: #00ff88; }
+.ss-ALERT     { background: #ffaa00; }
+.ss-SAFE_MODE { background: #ff5500; }
+.ss-HALT      { background: #ff1111; }
 </style>
 </head>
 <body class="s-OK">
 
-<!-- ── Click-to-start overlay ─────────────────────────────────────────────── -->
+<!-- ── Click-to-start overlay ──────────────────────────────────────── -->
 <div id="overlay">
   <h1>THE SYNESTHETIC ORDERBOOK</h1>
   <p>click anywhere to activate audio &amp; visual feed</p>
 </div>
 
-<!-- ── Main application ────────────────────────────────────────────────────── -->
-<div id="app">
+<!-- ── View toggle (shown after overlay dismissed) ─────────────────── -->
+<button id="view-toggle">
+  DATA VIEW <span class="kbd">D</span>
+</button>
 
-  <!-- Header -->
-  <div id="header">
+<!-- ══════════════════════════════════════════════════════════════════
+     MAIN VIEW
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="view-main">
+
+  <div id="main-header">
     <span class="title">THE SYNESTHETIC ORDERBOOK</span>
     <span id="conn-status">DISCONNECTED</span>
   </div>
 
-  <!-- Left: Audio mapping panel -->
   <div class="panel" id="audio-panel">
     <div class="panel-label">Audio Mapping</div>
-
     <div class="ctrl-row">
       <span class="ctrl-name">Filter Cutoff</span>
       <span class="ctrl-val" id="val-filter">—</span>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar-filter" style="width:20%;background:#00ff88"></div></div>
-
     <div class="ctrl-row" style="margin-top:14px">
       <span class="ctrl-name">Reverb Decay</span>
       <span class="ctrl-val" id="val-reverb">—</span>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar-reverb" style="width:5%;background:#44aaff"></div></div>
-
     <div class="ctrl-row" style="margin-top:14px">
       <span class="ctrl-name">Detune</span>
       <span class="ctrl-val" id="val-detune">—</span>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar-detune" style="width:0%;background:#ff88aa"></div></div>
-
     <div class="ctrl-row" style="margin-top:14px">
       <span class="ctrl-name">Chord</span>
       <span class="ctrl-val" id="val-chord">—</span>
     </div>
-
     <button class="audio-toggle" id="mute-btn">MUTE AUDIO</button>
-
-    <!-- Mini oscilloscope -->
-    <div id="scope-wrap">
-      <canvas id="scope"></canvas>
-    </div>
+    <div id="scope-wrap"><canvas id="scope"></canvas></div>
   </div>
 
-  <!-- Centre: State + reasons -->
   <div id="state-panel">
     <div id="state-badge" class="s-OK">OK</div>
     <ul id="reasons-list">
@@ -258,10 +338,8 @@
     </ul>
   </div>
 
-  <!-- Right: Smoothed metrics -->
   <div class="panel" id="metrics-panel">
     <div class="panel-label">Smoothed Metrics</div>
-
     <div class="metric-row">
       <div class="metric-name">SPREAD</div>
       <div><span class="metric-val" id="m-spread">—</span><span class="metric-unit">bps</span></div>
@@ -276,90 +354,148 @@
     </div>
   </div>
 
-  <!-- Footer -->
-  <div id="footer">
+  <div id="main-footer">
     <span id="ts-display">ts: —</span>
     <span>PID-smoothed @ 60 Hz  |  ws://localhost:8765</span>
     <span id="fps-display">0 fps</span>
   </div>
 
-</div><!-- #app -->
+</div><!-- #view-main -->
+
+<!-- ══════════════════════════════════════════════════════════════════
+     DEBUG VIEW
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="view-debug">
+<div id="dbg-root">
+
+  <div id="dbg-header">
+    <span class="title">ORDERBOOK DEBUG</span>
+    <span id="state-pill" class="OK">OK</span>
+    <span class="hstat">Mid <span id="h-mid">—</span></span>
+    <span class="hstat">Spread <span id="h-spread">—</span></span>
+    <span class="hstat">Trades <span id="h-trades">—</span></span>
+    <span class="hstat">MM pos <span id="h-mmpos">—</span></span>
+    <span class="hstat">MM P&amp;L <span id="h-mmpnl">—</span></span>
+    <span id="dbg-conn-pill">DISCONNECTED</span>
+  </div>
+
+  <div class="dbg-panel" id="price-panel">
+    <div class="dbg-panel-title">Mid Price + Trade Executions</div>
+    <div id="state-strip-wrap"></div>
+    <div class="chart-wrap"><canvas id="price-chart"></canvas></div>
+  </div>
+
+  <div class="dbg-panel" id="pos-panel">
+    <div class="dbg-panel-title">Agent Positions</div>
+    <div class="chart-wrap"><canvas id="pos-chart"></canvas></div>
+  </div>
+
+  <div class="dbg-panel" id="spread-panel">
+    <div class="dbg-panel-title">Spread (bps) vs Thresholds</div>
+    <div class="chart-wrap"><canvas id="spread-chart"></canvas></div>
+  </div>
+
+  <div class="dbg-panel" id="depth-panel">
+    <div class="dbg-panel-title">Live Orderbook Depth</div>
+    <div class="chart-wrap"><canvas id="depth-chart"></canvas></div>
+  </div>
+
+  <div class="dbg-panel" id="stats-panel">
+    <div class="dbg-panel-title">Live Stats</div>
+    <div id="stats-body"></div>
+  </div>
+
+  <div class="dbg-panel" id="trades-panel">
+    <div class="dbg-panel-title">Recent Executions</div>
+    <div id="trades-wrap">
+      <div class="trade-hdr">
+        <span>#</span><span>Price</span><span>Qty</span><span>Side</span><span>Reason / State</span>
+      </div>
+      <div id="trades-body"></div>
+    </div>
+  </div>
+
+</div><!-- #dbg-root -->
+</div><!-- #view-debug -->
 
 <script>
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// State
+// Shared state
 // ─────────────────────────────────────────────────────────────────────────────
 const WS_URL = 'ws://localhost:8765';
-let synth, filter, delay, reverb, analyser, muted = false;
 let ws = null, reconnTimer = null;
 let lastState = 'OK';
 let fpsCount = 0, fpsLast = performance.now();
-let audioReady = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Audio Setup  (Tone.js)
+// View toggle
 // ─────────────────────────────────────────────────────────────────────────────
+let showingDebug = false;
 
-// Action → chord notes
+function toggleView() {
+  showingDebug = !showingDebug;
+  document.body.classList.toggle('show-debug', showingDebug);
+  const btn = document.getElementById('view-toggle');
+  btn.innerHTML = showingDebug
+    ? 'VISUAL VIEW <span class="kbd">D</span>'
+    : 'DATA VIEW <span class="kbd">D</span>';
+
+  // Charts need a resize tick after becoming visible
+  if (showingDebug) {
+    requestAnimationFrame(() => {
+      [priceChart, spreadChart, posChart, depthChart].forEach(c => c.resize());
+    });
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if ((e.key === 'd' || e.key === 'D') &&
+      !e.ctrlKey && !e.metaKey &&
+      document.getElementById('overlay').classList.contains('hidden')) {
+    toggleView();
+  }
+});
+document.getElementById('view-toggle').addEventListener('click', toggleView);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio (Tone.js)
+// ─────────────────────────────────────────────────────────────────────────────
+let synth, filter, delay, reverb, analyser, muted = false, audioReady = false;
+
 const CHORDS = {
-  OK:        ['C3', 'G3', 'E4'],          // C major – open, bright
-  ALERT:     ['A2', 'C3', 'Eb3'],         // A minor – tense
-  SAFE_MODE: ['F#2', 'A2', 'C3'],         // F# dim  – ominous
-  HALT:      [],                           // silence
-};
-
-// Action → oscillator types
-const OSC_TYPES = {
-  OK:        'sine',
-  ALERT:     'triangle',
-  SAFE_MODE: 'sawtooth',
-  HALT:      'sine',
+  OK:        ['C3','G3','E4'],
+  ALERT:     ['A2','C3','Eb3'],
+  SAFE_MODE: ['F#2','A2','C3'],
+  HALT:      [],
 };
 
 async function initAudio() {
   await Tone.start();
-
-  // Signal chain: PolySynth → Filter → Delay → Reverb → Destination
   reverb = new Tone.Reverb({ decay: 1.5, wet: 0.35 }).toDestination();
   await reverb.ready;
-
-  delay = new Tone.FeedbackDelay({ delayTime: 0.1, feedback: 0.25, wet: 0.2 })
-    .connect(reverb);
-
-  filter = new Tone.Filter({ frequency: 800, type: 'lowpass', rolloff: -24 })
-    .connect(delay);
-
+  delay  = new Tone.FeedbackDelay({ delayTime: 0.1, feedback: 0.25, wet: 0.2 }).connect(reverb);
+  filter = new Tone.Filter({ frequency: 800, type: 'lowpass', rolloff: -24 }).connect(delay);
   analyser = new Tone.Analyser('waveform', 128);
   filter.connect(analyser);
-
   synth = new Tone.PolySynth(Tone.Synth, {
     oscillator: { type: 'sine' },
     envelope:   { attack: 0.6, decay: 0.3, sustain: 0.85, release: 2.5 },
     volume:     -18,
   }).connect(filter);
 
-  // Resume chord whenever the AudioContext comes back from suspension.
-  // Browsers (especially Chrome) suspend the context when the tab is
-  // backgrounded or after a period of inactivity — without this the
-  // audio silently dies and never restarts.
   Tone.getContext().rawContext.addEventListener('statechange', () => {
-    if (Tone.getContext().state === 'running' && audioReady && !muted) {
+    if (Tone.getContext().state === 'running' && audioReady && !muted)
       if (currentChord.length === 0) playChord(lastState);
-    }
   });
-
-  // Also resume when the tab becomes visible again.
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && audioReady && !muted) {
+    if (!document.hidden && audioReady && !muted)
       Tone.getContext().resume().then(() => {
         if (currentChord.length === 0) playChord(lastState);
       });
-    }
   });
 
-  // Start in OK chord
   playChord('OK');
   audioReady = true;
   drawScope();
@@ -367,251 +503,371 @@ async function initAudio() {
 
 let currentChord = [];
 function playChord(state) {
-  if (!synth) return;
-  if (muted) return;
-
+  if (!synth || muted) return;
   const notes = CHORDS[state] || [];
-  // Release old notes
-  if (currentChord.length) {
-    synth.releaseAll(Tone.now());
-  }
+  if (currentChord.length) synth.releaseAll(Tone.now());
   currentChord = notes;
-  if (notes.length) {
-    // Stagger the attack slightly for a more natural chord feel
+  if (notes.length)
     notes.forEach((n, i) => synth.triggerAttack(n, Tone.now() + i * 0.05));
-    // Update oscillator type
-    // PolySynth doesn't expose per-voice type directly; we set it at construction.
-    // We vary the synth's detune instead.
-  }
+}
+
+function spreadToFilterHz(s)  { return 200 + Math.min(Math.max(s,0)/300,1)*8800; }
+function latencyToReverbDecay(l) { return 0.15 + Math.min(Math.max(l,0)/200,1)*9.85; }
+function latencyToDelayTime(l)   { return 0.02 + Math.min(Math.max(l,0)/200,1)*0.58; }
+function zscoreToDetune(z)       { return Math.min(Math.abs(z),20)/20*250; }
+
+document.getElementById('mute-btn').addEventListener('click', () => {
+  muted = !muted;
+  document.getElementById('mute-btn').textContent = muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO';
+  if (muted && synth)       { synth.releaseAll(); currentChord = []; }
+  else if (!muted && synth)   playChord(lastState);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Oscilloscope
+// ─────────────────────────────────────────────────────────────────────────────
+function drawScope() {
+  const canvas = document.getElementById('scope');
+  const ctx = canvas.getContext('2d');
+  canvas.width  = canvas.offsetWidth  * window.devicePixelRatio;
+  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
+  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+  (function frame() {
+    ctx.clearRect(0,0,W,H);
+    if (analyser && audioReady && !muted) {
+      const buf = analyser.getValue();
+      ctx.beginPath(); ctx.strokeStyle='rgba(0,255,136,0.6)'; ctx.lineWidth=1;
+      buf.forEach((v,i) => {
+        const x=(i/(buf.length-1))*W, y=((v+1)/2)*H;
+        i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+      });
+      ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.strokeStyle='rgba(0,255,136,0.18)';
+      ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke();
+    }
+    requestAnimationFrame(frame);
+  })();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mapping functions  (raw metrics → audio parameters)
+// Debug charts (Chart.js)
 // ─────────────────────────────────────────────────────────────────────────────
-function spreadToFilterHz(spread_bps) {
-  // 0–300 bps  →  200–9000 Hz
-  const t = Math.min(Math.max(spread_bps, 0) / 300, 1);
-  return 200 + t * 8800;
+const MAX_PTS = 120;
+const ALERT_SPREAD = 40, HALT_SPREAD = 80;
+
+Chart.defaults.color       = '#4a8a6a';
+Chart.defaults.borderColor = '#1a3a28';
+Chart.defaults.font.family = "'Courier New', monospace";
+Chart.defaults.font.size   = 11;
+
+const BASE_OPTS = {
+  animation: false, responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false }, tooltip: { enabled: false } },
+  scales: {
+    x: { display: false },
+    y: { grid: { color: '#1a3a2855' }, ticks: { maxTicksLimit: 5 } },
+  },
+};
+
+// Rolling buffers
+const times=[], midPrices=[], bidPrices=[], askPrices=[], spreads=[], stateHist=[];
+const tradeLog=[];
+let lastTradeCount=0, tradeSeq=0;
+
+function push(arr,val) { arr.push(val); if(arr.length>MAX_PTS) arr.shift(); }
+
+const priceChart = new Chart(
+  document.getElementById('price-chart').getContext('2d'), {
+  type: 'line',
+  data: { labels: times, datasets: [
+    { data: askPrices, borderColor:'#ff555566', borderWidth:1, pointRadius:0, fill:false, tension:0, borderDash:[3,3] },
+    { data: bidPrices, borderColor:'#00ff8866', borderWidth:1, pointRadius:0, fill:false, tension:0, borderDash:[3,3] },
+    { data: midPrices, borderColor:'#c8fde0',   borderWidth:1.5, pointRadius:0, fill:false, tension:0 },
+    { data:[], borderColor:'transparent',
+      backgroundColor: ctx => ctx.raw?.side==='buy' ? '#00ff88bb' : '#ff5555bb',
+      pointRadius:4, type:'scatter', parsing:{xAxisKey:'x',yAxisKey:'y'} },
+  ]},
+  options: { ...BASE_OPTS, scales: { ...BASE_OPTS.scales,
+    y: { ...BASE_OPTS.scales.y, ticks: { maxTicksLimit:6, callback: v=>v.toFixed(2) } } } },
+});
+
+const spreadChart = new Chart(
+  document.getElementById('spread-chart').getContext('2d'), {
+  type: 'line',
+  data: { labels: times, datasets: [
+    { data: spreads, borderColor:'#44aaff', borderWidth:1.5, pointRadius:0,
+      fill:{target:'origin',above:'#44aaff11'}, tension:0 },
+    { data: Array(MAX_PTS).fill(ALERT_SPREAD), borderColor:'#ffaa0055', borderWidth:1, pointRadius:0, borderDash:[4,4], fill:false },
+    { data: Array(MAX_PTS).fill(HALT_SPREAD),  borderColor:'#ff444455', borderWidth:1, pointRadius:0, borderDash:[2,4], fill:false },
+  ]},
+  options: { ...BASE_OPTS },
+});
+
+const posChart = new Chart(
+  document.getElementById('pos-chart').getContext('2d'), {
+  type: 'bar',
+  data: {
+    labels: ['MM','RT-0','RT-1','RT-2','RT-3','RT-4'],
+    datasets: [{ data:[0,0,0,0,0,0],
+      backgroundColor: ctx => ctx.raw>=0 ? '#00ff8877' : '#ff555577',
+      borderColor:     ctx => ctx.raw>=0 ? '#00ff88'   : '#ff5555',
+      borderWidth:1 }],
+  },
+  options: { ...BASE_OPTS,
+    scales: {
+      x: { grid:{display:false}, ticks:{font:{size:10}} },
+      y: { ...BASE_OPTS.scales.y, ticks:{maxTicksLimit:5} },
+    },
+    plugins: { legend:{display:false}, tooltip:{enabled:true} },
+  },
+});
+
+const depthChart = new Chart(
+  document.getElementById('depth-chart').getContext('2d'), {
+  type: 'bar',
+  data: { labels:[], datasets:[
+    { label:'Bids', data:[], backgroundColor:'#00ff8866', borderColor:'#00ff88', borderWidth:1 },
+    { label:'Asks', data:[], backgroundColor:'#ff555566', borderColor:'#ff5555', borderWidth:1 },
+  ]},
+  options: { ...BASE_OPTS, indexAxis:'y',
+    scales: {
+      x: { grid:{color:'#1a3a2855'}, stacked:false, ticks:{maxTicksLimit:4} },
+      y: { grid:{display:false}, ticks:{font:{size:9},maxTicksLimit:10} },
+    },
+    plugins: { legend:{display:true,labels:{color:'#4a8a6a',boxWidth:10}}, tooltip:{enabled:false} },
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Debug view update helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function updateStateStrip(state) {
+  stateHist.push(state); if(stateHist.length>MAX_PTS) stateHist.shift();
+  document.getElementById('state-strip-wrap').innerHTML =
+    stateHist.map(s=>`<div class="ss-block ss-${s}"></div>`).join('');
 }
 
-function latencyToReverbDecay(latency_ms) {
-  // 0–200 ms  →  0.15–10 s decay
-  const t = Math.min(Math.max(latency_ms, 0) / 200, 1);
-  return 0.15 + t * 9.85;
+function updateDepth(bids, asks) {
+  const bp = bids.map(b=>b[0].toFixed(2));
+  const ap = asks.map(a=>a[0].toFixed(2));
+  const labels  = [...[...ap].reverse(), ...bp];
+  const bidData = Array(ap.length).fill(0).concat(bids.map(b=>b[1]));
+  const askData = asks.map(a=>a[1]).reverse().concat(Array(bp.length).fill(0));
+  depthChart.data.labels           = labels;
+  depthChart.data.datasets[0].data = bidData;
+  depthChart.data.datasets[1].data = askData;
+  depthChart.update('none');
 }
 
-function latencyToDelayTime(latency_ms) {
-  // 0–200 ms  →  0.02–0.6 s delay
-  const t = Math.min(Math.max(latency_ms, 0) / 200, 1);
-  return 0.02 + t * 0.58;
+function addTrade(trade, state) {
+  tradeSeq++;
+  tradeLog.unshift({seq:tradeSeq,...trade,state});
+  if(tradeLog.length>8) tradeLog.pop();
+  document.getElementById('trades-body').innerHTML = tradeLog.map(t=>`
+    <div class="trade-row ${t.side??'buy'}">
+      <span style="color:#4a8a6a">#${t.seq}</span>
+      <span>${t.price?.toFixed(3)}</span>
+      <span>${t.qty}</span>
+      <span class="side-${t.side??'buy'}">${(t.side??'?').toUpperCase()}</span>
+      <span style="color:#4a8a6a">${t.state}</span>
+    </div>`).join('');
 }
 
-function zscoreToDetune(zscore) {
-  // 0–20  →  0–250 cents (always positive → detune up for tension)
-  return Math.min(Math.abs(zscore), 20) / 20 * 250;
+function updateStats(d, state, reasons) {
+  const pnlClass = d.mm_pnl  != null ? (d.mm_pnl  >= 0 ? 'green' : 'red')   : '';
+  const posClass = d.mm_position != null ? (d.mm_position > 0 ? 'amber' : d.mm_position < 0 ? 'red' : 'green') : '';
+  document.getElementById('stats-body').innerHTML = `
+    <div class="stat-row"><span class="stat-label">Bid</span>
+      <span class="stat-val green">${d.bid??'—'}</span></div>
+    <div class="stat-row"><span class="stat-label">Ask</span>
+      <span class="stat-val red">${d.ask??'—'}</span></div>
+    <div class="stat-row"><span class="stat-label">Total trades</span>
+      <span class="stat-val">${d.total_trades??'—'}</span></div>
+    <div class="stat-row"><span class="stat-label">MM pos</span>
+      <span class="stat-val ${posClass}">${d.mm_position??'—'}</span></div>
+    <div class="stat-row"><span class="stat-label">MM P&amp;L</span>
+      <span class="stat-val ${pnlClass}">${d.mm_pnl!=null ? d.mm_pnl.toFixed(2) : '—'}</span></div>
+    <div class="stat-row"><span class="stat-label">State</span>
+      <span class="stat-val">${state}</span></div>
+    ${reasons.length ? `<div class="stat-row">
+      <span class="stat-label" style="color:#ff8844">Reasons</span>
+      <span class="stat-val" style="font-size:.6rem;color:#ff8844;word-break:break-all">${reasons.slice(0,2).join(', ')}</span>
+    </div>` : ''}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Apply incoming WebSocket data to audio + visuals
+// Main payload handler — updates both views every tick
 // ─────────────────────────────────────────────────────────────────────────────
 function applyPayload(data) {
   const { state, reasons, smoothed_metrics: m } = data;
+  const d = data.debug || {};
 
-  // ── Audio ───────────────────────────────────────────────────────
+  // ── Audio ─────────────────────────────────────────────────────────
   if (audioReady && !muted) {
-    // If the browser suspended the AudioContext (tab backgrounded, idle
-    // policy, etc.) kick it back to life before touching any parameters.
-    if (Tone.getContext().state !== 'running') {
-      Tone.getContext().resume().then(() => {
-        if (currentChord.length === 0) playChord(lastState);
-      });
-    }
+    if (Tone.getContext().state !== 'running')
+      Tone.getContext().resume().then(() => { if(currentChord.length===0) playChord(lastState); });
 
     const filterHz    = spreadToFilterHz(m.spread_bps);
     const reverbDecay = latencyToReverbDecay(m.latency_ms);
     const delayTime   = latencyToDelayTime(m.latency_ms);
     const detune      = zscoreToDetune(m.drift_zscore);
-    const rampTime    = 0.15;  // seconds — prevents audio clipping
-
-    filter.frequency.rampTo(filterHz,    rampTime);
-    reverb.decay = Math.max(0.01, reverbDecay);   // Reverb.decay is not rampable
-    delay.delayTime.rampTo(delayTime,    rampTime);
+    const ramp        = 0.15;
+    filter.frequency.rampTo(filterHz, ramp);
+    reverb.decay = Math.max(0.01, reverbDecay);
+    delay.delayTime.rampTo(delayTime, ramp);
     synth.set({ detune });
+    if (state !== lastState) playChord(state);
 
-    // Update chord on state change
-    if (state !== lastState) {
-      playChord(state);
-    }
-
-    // UI: audio values
-    setEl('val-filter', filterHz.toFixed(0) + ' Hz');
-    setEl('val-reverb', reverbDecay.toFixed(2) + ' s');
-    setEl('val-detune', detune.toFixed(1) + ' ¢');
-    setEl('val-chord',  state === 'HALT' ? 'SILENCE' : CHORDS[state]?.join(' ') ?? '—');
-
-    setBar('bar-filter', (filterHz - 200) / 8800, '#00ff88');
-    setBar('bar-reverb', (reverbDecay - 0.15) / 9.85, '#44aaff');
-    setBar('bar-detune', detune / 250, '#ff88aa');
+    setEl('val-filter', filterHz.toFixed(0)+' Hz');
+    setEl('val-reverb', reverbDecay.toFixed(2)+' s');
+    setEl('val-detune', detune.toFixed(1)+' ¢');
+    setEl('val-chord',  state==='HALT' ? 'SILENCE' : CHORDS[state]?.join(' ')??'—');
+    setBar('bar-filter', (filterHz-200)/8800, '#00ff88');
+    setBar('bar-reverb', (reverbDecay-0.15)/9.85, '#44aaff');
+    setBar('bar-detune', detune/250, '#ff88aa');
   }
 
-  // ── Visual / DOM ────────────────────────────────────────────────
+  // ── Main view: state badge + reasons ──────────────────────────────
   if (state !== lastState) {
-    document.body.className   = 's-' + state;
-    const badge               = document.getElementById('state-badge');
-    badge.textContent         = state.replace('_', ' ');
-    badge.className           = 's-' + state;
+    document.body.className = 's-'+state+(showingDebug ? ' show-debug' : '');
+    const badge = document.getElementById('state-badge');
+    badge.textContent = state.replace('_',' ');
+    badge.className   = 's-'+state;
     lastState = state;
   }
-
-  // Metrics display
   setEl('m-spread',  m.spread_bps.toFixed(1));
   setEl('m-latency', m.latency_ms.toFixed(1));
   setEl('m-zscore',  m.drift_zscore.toFixed(2));
+  colourMetric('m-spread',  m.spread_bps,   40, 80);
+  colourMetric('m-latency', m.latency_ms,   50, 100);
+  colourMetric('m-zscore',  m.drift_zscore,  5,  8);
 
-  // Colour metrics by severity
-  colourMetric('m-spread',  m.spread_bps,   40,  80);
-  colourMetric('m-latency', m.latency_ms,   35,  75);
-  colourMetric('m-zscore',  m.drift_zscore,  5,   8);
-
-  // Reasons list
   const ul = document.getElementById('reasons-list');
-  if (reasons.length === 0) {
-    ul.innerHTML = '<li style="color:var(--dim);font-style:italic">No active alerts</li>';
-  } else {
-    ul.innerHTML = reasons
-      .map(r => `<li class="new">${escHtml(r)}</li>`)
-      .join('');
-  }
+  ul.innerHTML = reasons.length
+    ? reasons.map(r=>`<li class="new">${escHtml(r)}</li>`).join('')
+    : '<li style="color:var(--dim);font-style:italic">No active alerts</li>';
 
-  // Timestamp
-  const d = new Date(data.timestamp * 1000);
-  setEl('ts-display', 'ts: ' + d.toISOString().slice(11, 23));
-
-  // FPS counter
+  const ts = new Date(data.timestamp*1000);
+  setEl('ts-display', 'ts: '+ts.toISOString().slice(11,23));
   fpsCount++;
   const now = performance.now();
-  if (now - fpsLast >= 1000) {
-    setEl('fps-display', fpsCount + ' fps');
-    fpsCount = 0; fpsLast = now;
-  }
-}
+  if (now-fpsLast>=1000) { setEl('fps-display',fpsCount+' fps'); fpsCount=0; fpsLast=now; }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Mini oscilloscope
-// ─────────────────────────────────────────────────────────────────────────────
-function drawScope() {
-  const canvas = document.getElementById('scope');
-  const ctx    = canvas.getContext('2d');
-  canvas.width  = canvas.offsetWidth  * window.devicePixelRatio;
-  canvas.height = canvas.offsetHeight * window.devicePixelRatio;
-  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+  // ── Debug view: always update state pill + strip ──────────────────
+  const pill = document.getElementById('state-pill');
+  pill.textContent = state.replace('_',' ');
+  pill.className   = state;
+  updateStateStrip(state);
 
-  function frame() {
-    ctx.clearRect(0, 0, W, H);
-    if (analyser && audioReady && !muted) {
-      const buf = analyser.getValue();
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(0,255,136,0.6)';
-      ctx.lineWidth   = 1;
-      for (let i = 0; i < buf.length; i++) {
-        const x = (i / (buf.length - 1)) * W;
-        const y = ((buf[i] + 1) / 2) * H;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    } else {
-      // flat line when muted / audio off
-      ctx.beginPath();
-      ctx.strokeStyle = 'rgba(0,255,136,0.18)';
-      ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2);
-      ctx.stroke();
+  // Spread is always available from smoothed_metrics (PID runs every tick)
+  setEl('h-spread', m.spread_bps?.toFixed(1)+' bps');
+
+  // ── Debug view: only update when fresh engine data arrives ─────────
+  // 'debug' is only populated on market ticks (10 Hz); on the other 5/6
+  // broadcast ticks it is {}, causing d.mid / d.total_trades etc. to be
+  // undefined.  Guard here so the panel holds its last known values.
+  if (d.mid != null) {
+    const t = ts.toISOString().slice(14,23);
+    push(times,     t);
+    push(midPrices, d.mid);
+    push(bidPrices, d.bid??null);
+    push(askPrices, d.ask??null);
+    push(spreads,   m.spread_bps??null);
+
+    setEl('h-mid',    d.mid.toFixed(3));
+    setEl('h-trades', d.total_trades);
+    setEl('h-mmpos',  d.mm_position??'—');
+    setEl('h-mmpnl',  d.mm_pnl!=null ? '$'+d.mm_pnl.toFixed(0) : '—');
+
+    if (d.total_trades > lastTradeCount && d.recent_trades?.length) {
+      const newCount = d.total_trades - lastTradeCount;
+      d.recent_trades.slice(0,newCount).forEach(tr => {
+        const side = tr.price>=(d.mid??tr.price) ? 'buy' : 'sell';
+        addTrade({...tr,side}, state);
+        const pts = priceChart.data.datasets[3].data;
+        pts.push({x:times.length-1, y:tr.price, side});
+        if(pts.length>MAX_PTS) pts.shift();
+      });
+      lastTradeCount = d.total_trades;
     }
-    requestAnimationFrame(frame);
+
+    priceChart.update('none');
+    spreadChart.update('none');
+
+    if (d.mm_position!=null) {
+      const posData = [d.mm_position, ...(d.retail_positions||[])];
+      const manip   = d.manip_positions||[];
+      const allPos  = [...posData, ...manip];
+      const labels  = ['MM'];
+      for(let i=0;i<(d.retail_positions||[]).length;i++) labels.push('RT-'+i);
+      for(let i=0;i<manip.length;i++) labels.push(manip.length===1?'MANIP':'MANIP-'+i);
+      posChart.data.labels                      = labels;
+      posChart.data.datasets[0].data            = allPos;
+      posChart.data.datasets[0].backgroundColor = allPos.map((v,i)=>
+        i>=posData.length ? '#FFD60077' : v>=0 ? '#00ff8877' : '#ff555577');
+      posChart.data.datasets[0].borderColor     = allPos.map((v,i)=>
+        i>=posData.length ? '#FFD600'   : v>=0 ? '#00ff88'   : '#ff5555');
+      posChart.update('none');
+    }
+
+    if(d.depth_bids?.length||d.depth_asks?.length)
+      updateDepth(d.depth_bids||[], d.depth_asks||[]);
+
+    updateStats(d, state, reasons);
   }
-  frame();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WebSocket connection management
+// WebSocket
 // ─────────────────────────────────────────────────────────────────────────────
 function connect() {
-  if (ws) ws.close();
+  if(ws) ws.close();
   ws = new WebSocket(WS_URL);
-
   ws.onopen = () => {
-    const el = document.getElementById('conn-status');
-    el.textContent = 'LIVE';
-    el.className   = 'live';
-    if (reconnTimer) { clearTimeout(reconnTimer); reconnTimer = null; }
+    ['conn-status','dbg-conn-pill'].forEach(id => {
+      const el=document.getElementById(id);
+      el.textContent='LIVE'; el.className='live';
+    });
+    if(reconnTimer){clearTimeout(reconnTimer);reconnTimer=null;}
   };
-
-  ws.onmessage = (ev) => {
-    try {
-      const data = JSON.parse(ev.data);
-      applyPayload(data);
-    } catch (e) { console.warn('Parse error:', e); }
-  };
-
+  ws.onmessage = ev => { try{applyPayload(JSON.parse(ev.data));}catch(e){console.warn(e);} };
   ws.onerror = ws.onclose = () => {
-    const el = document.getElementById('conn-status');
-    el.textContent = 'RECONNECTING…';
-    el.className   = 'error';
-    // Exponential-ish back-off: try again in 2 s
-    if (!reconnTimer) reconnTimer = setTimeout(connect, 2000);
+    ['conn-status','dbg-conn-pill'].forEach(id => {
+      const el=document.getElementById(id);
+      el.textContent='RECONNECTING…'; el.className='error';
+    });
+    if(!reconnTimer) reconnTimer=setTimeout(connect,2000);
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Overlay click → start everything
+// Overlay
 // ─────────────────────────────────────────────────────────────────────────────
 document.getElementById('overlay').addEventListener('click', async () => {
   const overlay = document.getElementById('overlay');
   overlay.classList.add('hidden');
-  setTimeout(() => overlay.style.display = 'none', 700);
-
+  setTimeout(()=>overlay.style.display='none', 700);
+  document.getElementById('view-toggle').style.display = 'block';
   await initAudio();
   connect();
 });
 
-// Mute toggle
-document.getElementById('mute-btn').addEventListener('click', () => {
-  muted = !muted;
-  document.getElementById('mute-btn').textContent = muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO';
-  if (muted && synth) {
-    synth.releaseAll();
-    currentChord = [];
-  } else if (!muted && synth) {
-    playChord(lastState);
-  }
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Utility helpers
+// Utilities
 // ─────────────────────────────────────────────────────────────────────────────
-function setEl(id, text) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = text;
+function setEl(id,text){ const e=document.getElementById(id); if(e) e.textContent=text; }
+function setBar(id,fraction,colour){
+  const e=document.getElementById(id); if(!e) return;
+  e.style.width=(Math.min(Math.max(fraction,0),1)*100).toFixed(1)+'%';
+  e.style.background=colour;
 }
-
-function setBar(id, fraction, colour) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.style.width      = (Math.min(Math.max(fraction, 0), 1) * 100).toFixed(1) + '%';
-  el.style.background = colour;
+function colourMetric(id,value,alertT,haltT){
+  const e=document.getElementById(id); if(!e) return;
+  e.style.color = value>=haltT ? '#ff3333' : value>=alertT ? '#ffaa00' : '#00ff88';
 }
-
-function colourMetric(id, value, alertThresh, haltThresh) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  if (value >= haltThresh)  el.style.color = '#ff3333';
-  else if (value >= alertThresh) el.style.color = '#ffaa00';
-  else                      el.style.color = '#00ff88';
-}
-
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
+function escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 </script>
 </body>
 </html>

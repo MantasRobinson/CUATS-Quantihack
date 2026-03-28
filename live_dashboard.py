@@ -1,9 +1,18 @@
-"""Live simulation dashboard — watch agents trade in real-time.
+"""Live simulation dashboard — runs its own agent simulation and displays it.
 
-Usage:  python live_dashboard.py
-        Press Q or close the window to stop.
+Usage:
+    python live_dashboard.py                         # 1 MM, 5 retail, 0 manip
+    python live_dashboard.py --mm 1 --retail 3 --manip 1
+    python live_dashboard.py --manip 2               # add 2 manipulators
+
+Press Q or close the window to stop.
+
+Note: run server.py with the same flags to get matching configs over WebSocket.
 """
 
+from __future__ import annotations
+
+import argparse
 import sys
 import traceback
 
@@ -35,9 +44,9 @@ from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
 # Config
 # ─────────────────────────────────────────────────────────────────────
 
-WINDOW         = 600    # how many steps of history visible on screen
-STEPS_PER_FRAME = 2     # sim steps computed per animation frame
-FRAME_MS       = 100    # milliseconds between frames (~10 fps)
+WINDOW          = 600    # steps of history visible on screen
+STEPS_PER_FRAME = 3      # sim steps computed per animation frame
+FRAME_MS        = 80     # milliseconds between frames (~12 fps)
 
 AGENT_COLORS = {
     "MM":    "#E91E63",
@@ -49,53 +58,61 @@ AGENT_COLORS = {
     "MANIP": "#FFD600",
 }
 
+_RETAIL_CFGS = [
+    RetailTraderConfig(activity_rate=0.15, min_size=1, max_size=8,
+                       trend_sensitivity=0.2, limit_order_pct=0.6, max_position=50),
+    RetailTraderConfig(activity_rate=0.25, min_size=1, max_size=10,
+                       trend_sensitivity=0.3, limit_order_pct=0.4, max_position=60),
+    RetailTraderConfig(activity_rate=0.35, min_size=1, max_size=12,
+                       trend_sensitivity=0.5, limit_order_pct=0.3, max_position=50),
+    RetailTraderConfig(activity_rate=0.30, min_size=1, max_size=15,
+                       trend_sensitivity=0.6, limit_order_pct=0.2, max_position=40),
+    RetailTraderConfig(activity_rate=0.20, min_size=1, max_size=8,
+                       trend_sensitivity=0.1, limit_order_pct=0.5, max_position=50),
+]
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Simulation setup
 # ─────────────────────────────────────────────────────────────────────
 
-def build_simulation():
-    sim_cfg = SimulationConfig(num_steps=999_999, asset=BTC_ASSET, seed=42)
+def build_simulation(num_mm: int = 1, num_retail: int = 5, num_manip: int = 0):
+    sim_cfg = SimulationConfig(num_steps=999_999, asset="ASSET", seed=42)
     sim = Simulation(sim_cfg)
 
-    mm = MarketMakerAgent(
-        name="MM", asset=sim.asset, orderbook=sim.ob,
-        id_generator=sim.id_generator,
-        config=build_btc_market_maker_config(),
-    )
-    sim.add_agent(mm)
+    mm_agents = []
+    for i in range(max(num_mm, 0)):
+        name = "MM" if num_mm == 1 else f"MM-{i}"
+        mm = MarketMakerAgent(
+            name=name, asset=sim.asset, orderbook=sim.ob,
+            id_generator=sim.id_generator,
+            config=MarketMakerConfig(
+                fair_value=100.0, half_spread=0.05, quote_size=15,
+                max_inventory=200, skew_factor=0.02, num_levels=5,
+                level_spacing=0.05, fair_value_ema=0.05,
+            ),
+        )
+        sim.add_agent(mm)
+        mm_agents.append(mm)
 
-    retail_cfgs = [
-        RetailTraderConfig(activity_rate=0.15, min_size=1, max_size=8,
-                           trend_sensitivity=0.0, limit_order_pct=0.6, max_position=50),
-        RetailTraderConfig(activity_rate=0.25, min_size=1, max_size=10,
-                           trend_sensitivity=0.0, limit_order_pct=0.4, max_position=60),
-        RetailTraderConfig(activity_rate=0.35, min_size=1, max_size=12,
-                           trend_sensitivity=0.0, limit_order_pct=0.3, max_position=50),
-        RetailTraderConfig(activity_rate=0.30, min_size=1, max_size=15,
-                           trend_sensitivity=0.0, limit_order_pct=0.2, max_position=40),
-        RetailTraderConfig(activity_rate=0.20, min_size=1, max_size=8,
-                           trend_sensitivity=0.0, limit_order_pct=0.5, max_position=50),
-    ]
-    for i, cfg in enumerate(retail_cfgs):
+    for i in range(max(num_retail, 0)):
+        cfg = _RETAIL_CFGS[i % len(_RETAIL_CFGS)]
         sim.add_agent(RetailTraderAgent(
             name=f"RT-{i}", asset=sim.asset, orderbook=sim.ob,
             id_generator=sim.id_generator, config=cfg,
             rng_seed=sim_cfg.seed + i + 1,
         ))
 
-    manip = ManipulatorAgent(
-        name="MANIP", asset=sim.asset, orderbook=sim.ob,
-        id_generator=sim.id_generator,
-        config=ManipulatorConfig(
-            phase_length=150, spoof_size=80, pump_size=25,
-            dump_size=30, wash_size=5,
-        ),
-        rng_seed=sim_cfg.seed + 100,
-    )
-    sim.add_agent(manip)
+    for i in range(max(num_manip, 0)):
+        name = "MANIP" if num_manip == 1 else f"MANIP-{i}"
+        sim.add_agent(ManipulatorAgent(
+            name=name, asset=sim.asset, orderbook=sim.ob,
+            id_generator=sim.id_generator,
+            rng_seed=sim_cfg.seed + 1000 + i,
+        ))
 
-    return sim, mm, manip
+    primary_mm = mm_agents[0] if mm_agents else None
+    return sim, primary_mm
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -104,14 +121,13 @@ def build_simulation():
 
 class LiveDashboard:
 
-    def __init__(self, sim: Simulation, mm: MarketMakerAgent, manip: ManipulatorAgent):
+    def __init__(self, sim: Simulation, mm: MarketMakerAgent | None):
         self.sim = sim
-        self.mm = mm
-        self.manip = manip
+        self.mm  = mm
         self.step = 0
         self.prev_trade_count = 0
 
-        # Rolling buffers
+        # Rolling buffers (one per agent for positions)
         self.steps      = deque(maxlen=WINDOW)
         self.mids       = deque(maxlen=WINDOW)
         self.bids       = deque(maxlen=WINDOW)
@@ -181,13 +197,16 @@ class LiveDashboard:
             except Exception:
                 pass
 
-        self.fig.suptitle("CUATS Live Market Simulation", fontsize=16,
-                          fontweight="bold", color="#00E5FF", y=0.97)
+        agent_summary = ", ".join(a.name for a in self.sim.agents)
+        self.fig.suptitle(
+            f"CUATS Live Market Simulation  [{agent_summary}]",
+            fontsize=14, fontweight="bold", color="#00E5FF", y=0.97,
+        )
 
         gs = gridspec.GridSpec(3, 2, hspace=0.50, wspace=0.30,
                                left=0.07, right=0.96, top=0.91, bottom=0.06)
 
-        # ── Panel 1: Price (full width) ──
+        # — Price (full width) —
         self.ax_price = self.fig.add_subplot(gs[0, :])
         self.ax_price.set_title("Price", fontsize=12, color="#90CAF9", pad=8)
         self.ax_price.set_ylabel("Price", fontsize=9)
@@ -199,7 +218,7 @@ class LiveDashboard:
                              facecolor="#1a1a2e", edgecolor="#333")
         self.ax_price.grid(True, alpha=0.12)
 
-        # ── Panel 2: Spread ──
+        # — Spread —
         self.ax_spread = self.fig.add_subplot(gs[1, 0])
         self.ax_spread.set_title("Bid-Ask Spread", fontsize=12, color="#90CAF9", pad=8)
         self.ax_spread.set_ylabel("Spread", fontsize=9)
@@ -222,10 +241,12 @@ class LiveDashboard:
         self.ax_pos.tick_params(labelsize=8)
         self.pos_lines = {}
         for a in self.sim.agents:
-            lw = 2.0 if a.name in ("MM", "MANIP") else 0.8
-            al = 1.0 if a.name in ("MM", "MANIP") else 0.65
-            ln, = self.ax_pos.plot([], [], color=AGENT_COLORS.get(a.name, "#aaa"),
-                                   lw=lw, alpha=al, label=a.name)
+            is_mm    = a.name.startswith("MM")
+            is_manip = a.name.startswith("MANIP")
+            lw = 2.0 if (is_mm or is_manip) else 0.8
+            al = 1.0 if (is_mm or is_manip) else 0.65
+            color = AGENT_COLORS.get(a.name, "#FFD600" if is_manip else "#aaaaaa")
+            ln, = self.ax_pos.plot([], [], color=color, lw=lw, alpha=al, label=a.name)
             self.pos_lines[a.name] = ln
         self.ax_pos.legend(fontsize=7, ncol=3, loc="upper left",
                            facecolor="#1a1a2e", edgecolor="#333")
@@ -244,7 +265,7 @@ class LiveDashboard:
         self._depth_legend_added = False
         self._depth_frame_skip = 0  # only redraw depth every N frames
 
-        # ── Stats bar ──
+        # — Stats bar —
         self.stats_txt = self.fig.text(
             0.50, 0.995, "", fontsize=10, ha="center", va="top",
             color="#B0BEC5", family="monospace",
@@ -264,22 +285,12 @@ class LiveDashboard:
 
         bb = self.sim.ob.get_best_bid(self.sim.asset)
         ba = self.sim.ob.get_best_ask(self.sim.asset)
-
         bid_p = bb[0] if bb else None
         ask_p = ba[0] if ba else None
+        mid   = (bid_p + ask_p) / 2.0 if (bid_p and ask_p) else (bid_p or ask_p)
+        spread = (ask_p - bid_p) if (bid_p and ask_p) else 0.0
 
-        if bid_p is not None and ask_p is not None:
-            mid = (bid_p + ask_p) / 2.0
-        elif bid_p is not None:
-            mid = bid_p
-        elif ask_p is not None:
-            mid = ask_p
-        else:
-            mid = None
-
-        spread = (ask_p - bid_p) if (bid_p is not None and ask_p is not None) else 0.0
-
-        tc = len(self.sim.ob._trades)
+        tc  = len(self.sim.ob._trades)
         new = tc - self.prev_trade_count
         self.prev_trade_count = tc
 
@@ -289,20 +300,19 @@ class LiveDashboard:
         self.asks.append(ask_p)
         self.spreads.append(spread)
         self.trade_rate.append(new)
-
         for a in self.sim.agents:
             self.positions[a.name].append(a.state.position)
 
         self.step += 1
-        return mid, spread
+        return mid, spread, tc
 
     # ── Animation callback ───────────────────────────────────────────
 
-    def update(self, _frame):
+    def update(self, _):
         try:
-            mid = spread = 0
+            mid = spread = tc = 0
             for _ in range(STEPS_PER_FRAME):
-                mid, spread = self._tick()
+                mid, spread, tc = self._tick()
 
             x = list(self.steps)
             if len(x) < 2:
@@ -317,7 +327,7 @@ class LiveDashboard:
                 xs, ys = zip(*vm)
                 self.ln_mid.set_data(xs, ys)
                 ymin, ymax = min(ys), max(ys)
-                pad = max(ymax - ymin, 0.5) * 0.12
+                pad = max(ymax - ymin, 0.05) * 0.12
                 self.ax_price.set_xlim(xs[0], xs[-1])
                 self.ax_price.set_ylim(ymin - pad, ymax + pad)
             if vb:
@@ -354,57 +364,39 @@ class LiveDashboard:
                 pad = max(abs(hi - lo), 10) * 0.15
                 self.ax_pos.set_ylim(lo - pad, hi + pad)
 
-            # — Depth (update every 3rd frame to reduce load) —
-            self._depth_frame_skip += 1
-            if self._depth_frame_skip >= 3:
-                self._depth_frame_skip = 0
+            # — Depth (full redraw) —
+            self.ax_depth.clear()
+            self.ax_depth.set_title("Order Book Depth", fontsize=12,
+                                    color="#90CAF9", pad=8)
+            self.ax_depth.set_ylabel("Volume", fontsize=9)
+            self.ax_depth.set_xlabel("Price", fontsize=9)
+            self.ax_depth.tick_params(labelsize=8)
+            self.ax_depth.grid(True, alpha=0.12)
+            depth = self.sim.ob.get_market_depth(self.sim.asset, levels=10)
+            bp = [p for p, v in depth["bids"]]
+            bv = [v for p, v in depth["bids"]]
+            ap = [p for p, v in depth["asks"]]
+            av = [v for p, v in depth["asks"]]
+            bar_w = 0.03
+            if bp:
+                self.ax_depth.bar(bp, bv, width=bar_w, color="#4CAF50",
+                                  alpha=0.85, label="Bids")
+            if ap:
+                self.ax_depth.bar(ap, av, width=bar_w, color="#F44336",
+                                  alpha=0.85, label="Asks")
+            if bp or ap:
+                allp = bp + ap
+                self.ax_depth.set_xlim(min(allp) - 0.5, max(allp) + 0.5)
+                self.ax_depth.legend(fontsize=7, facecolor="#1a1a2e",
+                                     edgecolor="#333")
 
-                # Remove old bars
-                if self._depth_bars_bid is not None:
-                    self._depth_bars_bid.remove()
-                    self._depth_bars_bid = None
-                if self._depth_bars_ask is not None:
-                    self._depth_bars_ask.remove()
-                    self._depth_bars_ask = None
-
-                depth = self.sim.ob.get_market_depth(self.sim.asset, levels=10)
-                bp = [p for p, v in depth["bids"]]
-                bv = [v for p, v in depth["bids"]]
-                ap = [p for p, v in depth["asks"]]
-                av = [v for p, v in depth["asks"]]
-
-                bar_w = self._depth_bar_width(bp + ap)
-                if bp:
-                    self._depth_bars_bid = self.ax_depth.bar(
-                        bp, bv, width=bar_w, color="#4CAF50", alpha=0.85,
-                        label="Bids" if not self._depth_legend_added else "_")
-                if ap:
-                    self._depth_bars_ask = self.ax_depth.bar(
-                        ap, av, width=bar_w, color="#F44336", alpha=0.85,
-                        label="Asks" if not self._depth_legend_added else "_")
-                if bp or ap:
-                    allp = bp + ap
-                    pad_x = max(bar_w, 5.0)
-                    self.ax_depth.set_xlim(min(allp) - pad_x, max(allp) + pad_x)
-                    allv = bv + av
-                    max_volume = max(allv) if allv else 1
-                    y_top = max(max_volume, self._depth_volume_floor) * 1.15
-                    self.ax_depth.set_ylim(0, y_top)
-                    if not self._depth_legend_added:
-                        self.ax_depth.legend(fontsize=7, facecolor="#1a1a2e",
-                                             edgecolor="#333")
-                        self._depth_legend_added = True
-
-            # — Stats bar —
-            tc = len(self.sim.ob._trades)
-            mid_s = f"{mid:.2f}" if mid else "---"
+            # — Stats —
+            mid_s  = f"{mid:.3f}" if mid else "---"
+            mm_s   = (f"MM pos {self.mm.state.position:+d}  fills {self.mm.state.total_fills:,}"
+                      if self.mm else "no MM")
             self.stats_txt.set_text(
                 f"  Step {self.step:,}  |  Mid {mid_s}  |  "
-                f"Spread {spread:.3f}  |  Trades {tc:,}  |  "
-                f"MM pos {self.mm.state.position:+d}  "
-                f"fills {self.mm.state.total_fills:,}  |  "
-                f"MANIP pos {self.manip.state.position:+d}  "
-                f"phase {self.manip._current_phase}  "
+                f"Spread {spread:.4f}  |  Trades {tc:,}  |  {mm_s}  "
             )
 
             # Flush events so Windows doesn't show "not responding" cursor
@@ -430,6 +422,18 @@ class LiveDashboard:
 # ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    sim, mm, manip = build_simulation()
-    dash = LiveDashboard(sim, mm, manip)
+    parser = argparse.ArgumentParser(description="CUATS live simulation dashboard")
+    parser.add_argument("--mm",     type=int, default=1, metavar="N",
+                        help="Number of market-maker agents (default: 1)")
+    parser.add_argument("--retail", type=int, default=5, metavar="N",
+                        help="Number of retail-trader agents (default: 5)")
+    parser.add_argument("--manip",  type=int, default=0, metavar="N",
+                        help="Number of market-manipulator agents (default: 0)")
+    args = parser.parse_args()
+
+    print(f"Building simulation: {args.mm} MM  {args.retail} Retail  {args.manip} Manip")
+    sim, mm = build_simulation(
+        num_mm=args.mm, num_retail=args.retail, num_manip=args.manip,
+    )
+    dash = LiveDashboard(sim, mm)
     dash.run()
