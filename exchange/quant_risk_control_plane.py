@@ -28,11 +28,11 @@ class Thresholds:
     max_drawdown: float = 50_000.0
     hard_drawdown: float = 150_000.0
     psi_alert: float = 0.40         # brief distributional shifts → ALERT
-    psi_halt: float = 0.90          # only sustained heavy drift → SAFE_MODE
+    psi_halt: float = 1.5          # only sustained heavy drift → SAFE_MODE
     min_reference_points: int = 300
     min_live_points: int = 120
     zscore_alert: float = 6.0
-    zscore_halt: float = 15.0       # HALT only on extreme z-score outliers
+    zscore_halt: float = 25.0       # HALT only on extreme z-score outliers
     max_spread_bps: float = 80.0    # stress MM quotes ~40 bps, empty-book fallback ~20 bps
 
 

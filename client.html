@@ -387,24 +387,24 @@ body.show-debug #view-debug { display: block; }
   </div>
 
   <div class="panel" id="audio-panel">
-    <div class="panel-label">Audio Mapping</div>
+    <div class="panel-label">Lofi Sequencer</div>
     <div class="ctrl-row">
-      <span class="ctrl-name">Filter Cutoff</span>
+      <span class="ctrl-name">Tempo</span>
       <span class="ctrl-val" id="val-filter">—</span>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar-filter" style="width:20%;background:#6B5ECD"></div></div>
     <div class="ctrl-row" style="margin-top:14px">
-      <span class="ctrl-name">Reverb Decay</span>
+      <span class="ctrl-name">Bit Depth</span>
       <span class="ctrl-val" id="val-reverb">—</span>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar-reverb" style="width:5%;background:#E879A0"></div></div>
     <div class="ctrl-row" style="margin-top:14px">
-      <span class="ctrl-name">Detune</span>
+      <span class="ctrl-name">Drift σ</span>
       <span class="ctrl-val" id="val-detune">—</span>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar-detune" style="width:0%;background:#D97706"></div></div>
     <div class="ctrl-row" style="margin-top:14px">
-      <span class="ctrl-name">Chord</span>
+      <span class="ctrl-name">Mode</span>
       <span class="ctrl-val" id="val-chord">—</span>
     </div>
     <button class="audio-toggle" id="mute-btn">MUTE AUDIO</button>
@@ -555,67 +555,162 @@ document.addEventListener('keydown', e => {
 document.getElementById('view-toggle').addEventListener('click', toggleView);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Audio (Tone.js)
+// Audio — Lofi sequencer (Tone.js)
 // ─────────────────────────────────────────────────────────────────────────────
-let synth, filter, delay, reverb, analyser, muted = false, audioReady = false;
+let kick, snare, hat, pad, mel, bass;
+let masterReverb, masterDelay, masterFilter, analyser;
+let drumSeq;
+let muted = false, audioReady = false;
+let _audioState = 'OK';
 
-const CHORDS = {
-  OK:        ['C3','G3','E4'],
-  ALERT:     ['A2','C3','Eb3'],
-  SAFE_MODE: ['F#2','A2','C3'],
-  HALT:      [],
+// ── Jazz chord voicings per state ─────────────────────────────────────────
+const LOFI_CHORDS = {
+  OK:        [['C3','E3','G3','B3'], ['A2','C3','E3','G3'], ['F2','A2','C3','E3'], ['G2','B2','D3','F3']],
+  ALERT:     [['D3','F3','A3','C4'], ['G2','B2','D3','Ab3'],['C3','Eb3','G3','Bb3'],['A2','C3','Eb3','G3']],
+  SAFE_MODE: [['B2','D3','F3','Ab3'],['Eb3','Gb3','Bb3','Db4'],['Ab2','C3','Eb3','G3'],['F2','Ab2','Cb3','Eb3']],
+  HALT:      [['C3','Db3','F#3','G3'],['F2','B2','C3','F#3'],['E2','Bb2','E3','Bb3'],['Ab2','D3','Ab3','D4']],
 };
+
+// ── Melody lines (16 steps, null = rest) ──────────────────────────────────
+const LOFI_MEL = {
+  OK:        ['C4',null,'E4',null,'G4',null,null,'A4','G4',null,'E4',null,'D4',null,null,null],
+  ALERT:     ['C4',null,'Eb4','D4','G4',null,'Bb4',null,'G4','F4','Eb4',null,'Db4',null,null,null],
+  SAFE_MODE: ['C4','Db4','E4','F4','Gb4','Ab4','Bb4','B4','C5',null,'Ab4',null,'Gb4',null,'Eb4',null],
+  HALT:      ['C5','F#4',null,'B4','Eb5',null,'G#4','C5','Ab4','E5',null,'F4','C#5','G4',null,'D5'],
+};
+
+// ── Bass lines (16 steps) ─────────────────────────────────────────────────
+const LOFI_BASS = {
+  OK:        ['C2',null,null,null,null,null,null,null,'A1',null,null,null,'F1',null,'G1',null],
+  ALERT:     ['D2',null,null,null,'G1',null,null,'Ab1','C2',null,null,null,'A1',null,null,null],
+  SAFE_MODE: ['B1',null,'Eb2',null,'Ab1',null,null,'Db2','F1',null,'Bb1',null,'D2',null,null,null],
+  HALT:      ['C2','F#1',null,'B1','Eb2',null,'Ab1',null,'D2','G#1',null,'Db2','E1',null,'Bb1',null],
+};
+
+// ── Drum patterns (16 steps of 16th notes) ───────────────────────────────
+const _DK = {  // kick
+  OK:        [1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0],
+  ALERT:     [1,0,0,0,0,0,1,0,1,0,0,0,0,1,0,0],
+  SAFE_MODE: [1,0,1,0,0,0,1,0,0,1,0,0,1,0,0,1],
+  HALT:      [1,1,0,1,1,0,1,0,0,1,1,0,1,0,1,1],
+};
+const _DS = {  // snare
+  OK:        [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0],
+  ALERT:     [0,0,0,0,1,0,0,1,0,0,0,0,1,0,1,0],
+  SAFE_MODE: [0,0,1,0,1,0,0,1,0,1,0,0,1,0,1,0],
+  HALT:      [0,1,0,1,0,1,1,0,1,0,0,1,0,1,0,1],
+};
+const _DH = {  // hi-hat
+  OK:        [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0],
+  ALERT:     [1,0,1,1,1,0,1,0,1,1,1,0,1,0,1,0],
+  SAFE_MODE: [1,1,1,0,1,1,0,1,1,0,1,1,0,1,1,0],
+  HALT:      [1,1,0,1,1,1,1,0,0,1,1,1,1,0,1,1],
+};
+
+const LOFI_BPM = { OK: 75, ALERT: 88, SAFE_MODE: 105, HALT: 128 };
 
 async function initAudio() {
   await Tone.start();
-  reverb = new Tone.Reverb({ decay: 1.5, wet: 0.35 }).toDestination();
-  await reverb.ready;
-  delay  = new Tone.FeedbackDelay({ delayTime: 0.1, feedback: 0.25, wet: 0.2 }).connect(reverb);
-  filter = new Tone.Filter({ frequency: 800, type: 'lowpass', rolloff: -24 }).connect(delay);
-  analyser = new Tone.Analyser('waveform', 128);
-  filter.connect(analyser);
-  synth = new Tone.PolySynth(Tone.Synth, {
+
+  // ── Same chain pattern as the original (known to work) ────────────────
+  masterReverb = new Tone.Reverb({ decay: 2.5, wet: 0.35 });
+  await masterReverb.ready;
+  masterDelay  = new Tone.FeedbackDelay({ delayTime: 0.12, feedback: 0.20, wet: 0.15 });
+  masterFilter = new Tone.Filter({ frequency: 800, type: 'lowpass', rolloff: -24 });
+  analyser     = new Tone.Analyser('waveform', 128);
+
+  masterFilter.connect(masterDelay);
+  masterDelay.connect(masterReverb);
+  masterReverb.connect(analyser);
+  analyser.toDestination();
+
+  // ── Instruments ───────────────────────────────────────────────────────
+  kick = new Tone.MembraneSynth({ volume: -6 }).connect(masterFilter);
+
+  snare = new Tone.NoiseSynth({
+    noise: { type: 'white' },
+    envelope: { attack: 0.001, decay: 0.15, sustain: 0, release: 0.05 },
+    volume: -16,
+  }).connect(masterFilter);
+
+  hat = new Tone.NoiseSynth({
+    noise: { type: 'white' },
+    envelope: { attack: 0.001, decay: 0.04, sustain: 0, release: 0.01 },
+    volume: -24,
+  }).connect(masterFilter);
+
+  pad = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: 'triangle' },
+    envelope: { attack: 0.5, decay: 0.3, sustain: 0.8, release: 2.0 },
+    volume: -20,
+  }).connect(masterFilter);
+
+  // Use plain Synth (same as original) — avoids MonoSynth config pitfalls
+  mel = new Tone.Synth({
+    oscillator: { type: 'triangle' },
+    envelope: { attack: 0.05, decay: 0.15, sustain: 0.6, release: 0.5 },
+    volume: -24,
+  }).connect(masterFilter);
+
+  bass = new Tone.Synth({
     oscillator: { type: 'sine' },
-    envelope:   { attack: 0.6, decay: 0.3, sustain: 0.85, release: 2.5 },
-    volume:     -18,
-  }).connect(filter);
+    envelope: { attack: 0.06, decay: 0.15, sustain: 0.5, release: 0.4 },
+    volume: -12,
+  }).connect(masterFilter);
 
-  Tone.getContext().rawContext.addEventListener('statechange', () => {
-    if (Tone.getContext().state === 'running' && audioReady && !muted)
-      if (currentChord.length === 0) playChord(lastState);
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && audioReady && !muted)
-      Tone.getContext().resume().then(() => {
-        if (currentChord.length === 0) playChord(lastState);
-      });
-  });
+  // ── Single sequence drives everything ─────────────────────────────────
+  let _barCount = 0;
 
-  playChord('OK');
+  drumSeq = new Tone.Sequence((time, step) => {
+    if (muted) return;
+    const st = _audioState;
+
+    if (step === 0) {
+      const chord = LOFI_CHORDS[st][_barCount % 4];
+      pad.releaseAll(time);
+      chord.forEach((n, i) => pad.triggerAttack(n, time + i * 0.05));
+      _barCount++;
+    }
+
+    if (_DK[st][step]) kick.triggerAttackRelease('C1', '16n', time);
+    if (_DS[st][step]) snare.triggerAttackRelease('16n', time);
+    if (_DH[st][step]) hat.triggerAttackRelease('32n', time);
+
+    const mNote = LOFI_MEL[st][step];
+    if (mNote) mel.triggerAttackRelease(mNote, '16n', time);
+    const bNote = LOFI_BASS[st][step];
+    if (bNote) bass.triggerAttackRelease(bNote, '8n', time);
+
+  }, [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15], '16n');
+
+  Tone.Transport.bpm.value = LOFI_BPM.OK;
+  drumSeq.start(0);
+  Tone.Transport.start();
+
   audioReady = true;
   drawScope();
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && audioReady && !muted) Tone.getContext().resume();
+  });
 }
 
-let currentChord = [];
-function playChord(state) {
-  if (!synth || muted) return;
-  const notes = CHORDS[state] || [];
-  if (currentChord.length) synth.releaseAll(Tone.now());
-  currentChord = notes;
-  if (notes.length)
-    notes.forEach((n, i) => synth.triggerAttack(n, Tone.now() + i * 0.05));
+function updateAudioState(newState) {
+  if (!audioReady || newState === _audioState) return;
+  _audioState = newState;
+  const stress = ['OK', 'ALERT', 'SAFE_MODE', 'HALT'].indexOf(newState);
+  Tone.Transport.bpm.rampTo(LOFI_BPM[newState] || 75, 2.5);
+  // Open the filter and add reverb as state worsens (sound becomes harsher/wider)
+  masterFilter.frequency.rampTo(800 + stress * 600, 2.5);
+  masterReverb.wet.rampTo(0.35 + stress * 0.12, 2.5);
+  masterDelay.feedback.rampTo(0.20 + stress * 0.15, 2.5);
 }
-
-function spreadToFilterHz(s)  { return 200 + Math.min(Math.max(s,0)/300,1)*8800; }
-function latencyToReverbDecay(l) { return 0.15 + Math.min(Math.max(l,0)/200,1)*9.85; }
-function latencyToDelayTime(l)   { return 0.02 + Math.min(Math.max(l,0)/200,1)*0.58; }
-function zscoreToDetune(z)       { return Math.min(Math.abs(z),20)/20*250; }
 
 document.getElementById('mute-btn').addEventListener('click', () => {
   muted = !muted;
   document.getElementById('mute-btn').textContent = muted ? 'UNMUTE AUDIO' : 'MUTE AUDIO';
-  if (muted && synth)       { synth.releaseAll(); currentChord = []; }
-  else if (!muted && synth)   playChord(lastState);
+  if (muted) { Tone.Transport.pause(); pad?.releaseAll(); }
+  else if (audioReady) Tone.Transport.start();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -803,28 +898,18 @@ function applyPayload(data) {
   const d = data.debug || {};
 
   // ── Audio ─────────────────────────────────────────────────────────
-  if (audioReady && !muted) {
-    if (Tone.getContext().state !== 'running')
-      Tone.getContext().resume().then(() => { if(currentChord.length===0) playChord(lastState); });
-
-    const filterHz    = spreadToFilterHz(m.spread_bps);
-    const reverbDecay = latencyToReverbDecay(m.latency_ms);
-    const delayTime   = latencyToDelayTime(m.latency_ms);
-    const detune      = zscoreToDetune(m.drift_zscore);
-    const ramp        = 0.15;
-    filter.frequency.rampTo(filterHz, ramp);
-    reverb.decay = Math.max(0.01, reverbDecay);
-    delay.delayTime.rampTo(delayTime, ramp);
-    synth.set({ detune });
-    if (state !== lastState) playChord(state);
-
-    setEl('val-filter', filterHz.toFixed(0)+' Hz');
-    setEl('val-reverb', reverbDecay.toFixed(2)+' s');
-    setEl('val-detune', detune.toFixed(1)+' ¢');
-    setEl('val-chord',  state==='HALT' ? 'SILENCE' : CHORDS[state]?.join(' ')??'—');
-    setBar('bar-filter', (filterHz-200)/8800, '#6B5ECD');
-    setBar('bar-reverb', (reverbDecay-0.15)/9.85, '#E879A0');
-    setBar('bar-detune', detune/250, '#D97706');
+  if (audioReady) {
+    if (Tone.getContext().state !== 'running') Tone.getContext().resume();
+    if (state !== lastState) updateAudioState(state);
+    const stress = ['OK','ALERT','SAFE_MODE','HALT'].indexOf(state);
+    const bits   = Math.max(2, 8 - stress * 2);
+    setEl('val-filter', (LOFI_BPM[state] || 75) + ' bpm');
+    setEl('val-reverb', bits + ' bit');
+    setEl('val-detune', m.drift_zscore.toFixed(2) + ' σ');
+    setEl('val-chord',  state.replace('_',' '));
+    setBar('bar-filter', stress / 3, '#6B5ECD');
+    setBar('bar-reverb', (8 - bits) / 6, '#E879A0');
+    setBar('bar-detune', Math.min(Math.abs(m.drift_zscore) / 10, 1), '#D97706');
   }
 
   // ── Main view: state badge + reasons ──────────────────────────────
