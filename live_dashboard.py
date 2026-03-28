@@ -34,9 +34,10 @@ import numpy as np
 from collections import deque
 
 from agents.simulation import Simulation, SimulationConfig
-from agents.market_maker import MarketMakerAgent, MarketMakerConfig
+from agents.market_maker import MarketMakerAgent
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.manipulator import ManipulatorAgent, ManipulatorConfig
+from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -134,8 +135,48 @@ class LiveDashboard:
         self.spreads    = deque(maxlen=WINDOW)
         self.trade_rate = deque(maxlen=WINDOW)
         self.positions  = {a.name: deque(maxlen=WINDOW) for a in sim.agents}
+        self._depth_volume_floor = self._estimate_depth_volume_floor()
 
         self._build_figure()
+
+    def _estimate_depth_volume_floor(self) -> int:
+        """Use the sim's configured order sizes to keep depth scaling readable."""
+        sizes = []
+
+        mm_cfg = getattr(self.mm, "config", None)
+        if mm_cfg is not None:
+            sizes.append(getattr(mm_cfg, "quote_size", 0))
+
+        manip_cfg = getattr(self.manip, "config", None)
+        if manip_cfg is not None:
+            sizes.extend([
+                getattr(manip_cfg, "spoof_size", 0),
+                getattr(manip_cfg, "pump_size", 0),
+                getattr(manip_cfg, "dump_size", 0),
+                getattr(manip_cfg, "wash_size", 0),
+            ])
+
+        for agent in self.sim.agents:
+            cfg = getattr(agent, "config", None)
+            if cfg is None:
+                continue
+            sizes.append(getattr(cfg, "quote_size", 0))
+            sizes.append(getattr(cfg, "max_size", 0))
+
+        return max(max(sizes, default=1), 1)
+
+    @staticmethod
+    def _depth_bar_width(prices: list[float]) -> float:
+        """Scale bar width from the visible price ladder instead of a fixed toy value."""
+        if len(prices) >= 2:
+            gaps = [
+                abs(b - a)
+                for a, b in zip(sorted(prices), sorted(prices)[1:])
+                if abs(b - a) > 0
+            ]
+            if gaps:
+                return max(min(gaps) * 0.75, 0.5)
+        return 10.0
 
     # ── Figure construction ──────────────────────────────────────────
 
@@ -215,8 +256,14 @@ class LiveDashboard:
         # ── Panel 5: Depth ──
         self.ax_depth = self.fig.add_subplot(gs[2, 1])
         self.ax_depth.set_title("Order Book Depth", fontsize=12, color="#90CAF9", pad=8)
+        self.ax_depth.set_ylabel("Volume", fontsize=9)
+        self.ax_depth.set_xlabel("Price", fontsize=9)
         self.ax_depth.tick_params(labelsize=8)
         self.ax_depth.grid(True, alpha=0.12)
+        self._depth_bars_bid = None
+        self._depth_bars_ask = None
+        self._depth_legend_added = False
+        self._depth_frame_skip = 0  # only redraw depth every N frames
 
         # — Stats bar —
         self.stats_txt = self.fig.text(
@@ -351,6 +398,9 @@ class LiveDashboard:
                 f"  Step {self.step:,}  |  Mid {mid_s}  |  "
                 f"Spread {spread:.4f}  |  Trades {tc:,}  |  {mm_s}  "
             )
+
+            # Flush events so Windows doesn't show "not responding" cursor
+            self.fig.canvas.flush_events()
 
         except Exception:
             traceback.print_exc()

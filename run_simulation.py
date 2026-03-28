@@ -1,15 +1,16 @@
 """Entry point: run a market simulation with MM + retail + manipulator agents."""
 
 from agents.simulation import Simulation, SimulationConfig
-from agents.market_maker import MarketMakerAgent, MarketMakerConfig
+from agents.market_maker import MarketMakerAgent
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.manipulator import ManipulatorAgent, ManipulatorConfig
+from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
 from export import export_simulation
 
 
 def main():
     # --- Configuration ---
-    sim_config = SimulationConfig(num_steps=2000, asset="BTC", seed=42)
+    sim_config = SimulationConfig(num_steps=2000, asset=BTC_ASSET, seed=42)
     sim = Simulation(sim_config)
 
     # --- Market Maker ---
@@ -18,18 +19,7 @@ def main():
         asset=sim.asset,
         orderbook=sim.ob,
         id_generator=sim.id_generator,
-        config=MarketMakerConfig(
-            fair_value=100.0,
-            half_spread=0.40,
-            quote_size=15,
-            max_inventory=200,
-            skew_factor=0.02,
-            num_levels=5,
-            level_spacing=0.15,
-            fair_value_ema=0.05,
-            annual_drift=0.05,
-            annual_vol=0.60,
-        ),
+        config=build_btc_market_maker_config(),
     )
     sim.add_agent(mm)
 
