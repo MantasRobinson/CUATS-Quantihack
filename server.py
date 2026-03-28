@@ -44,6 +44,7 @@ from agents.manipulator import ManipulatorAgent, ManipulatorConfig
 from agents.market_maker import MarketMakerAgent, MarketMakerConfig
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.simulation import Simulation, SimulationConfig
+from btc_sim_config import BTC_ASSET, BTC_START_PRICE, build_btc_market_maker_config
 from exchange.quant_risk_control_plane import (
     MarketEvent,
     OrderEvent,
@@ -86,6 +87,18 @@ def build_agent_sim_thresholds() -> Thresholds:
         zscore_alert=6.0,
         zscore_halt=10.0,
         max_spread_bps=100.0,
+    )
+
+
+def build_agent_sim_stress_mm_config() -> MarketMakerConfig:
+    """BTC-calibrated stressed MM profile for the browser live sim."""
+    return dataclasses.replace(
+        build_btc_market_maker_config(),
+        half_spread=90.0,
+        quote_size=8,
+        num_levels=2,
+        level_spacing=35.0,
+        annual_vol=1.20,
     )
 
 
@@ -149,21 +162,13 @@ class AgentOrderbookSimulator:
     When stress ends the original configs are restored.
     """
 
-    ASSET = "SYN"
+    ASSET = BTC_ASSET
 
     # Normal MM config — half_spread=0.05 -> ~10 bps spread on $100, well below
     # the 40 bps ALERT threshold so the monitor stays OK in calm conditions.
-    _MM_NORMAL = MarketMakerConfig(
-        fair_value=100.0, half_spread=0.05, quote_size=15,
-        max_inventory=200, skew_factor=0.02, num_levels=5,
-        level_spacing=0.05, fair_value_ema=0.05,
-    )
+    _MM_NORMAL = build_btc_market_maker_config()
     # Stressed MM config — half_spread=0.20 -> ~40 bps, triggers ALERT as intended.
-    _MM_STRESS = MarketMakerConfig(
-        fair_value=100.0, half_spread=0.20, quote_size=5,
-        max_inventory=200, skew_factor=0.02, num_levels=2,
-        level_spacing=0.15, fair_value_ema=0.05, drift_std=0.20,
-    )
+    _MM_STRESS = build_agent_sim_stress_mm_config()
 
     # Normal retail personalities (mirrors run_simulation.py)
     _RETAIL_NORMAL = [
@@ -194,7 +199,7 @@ class AgentOrderbookSimulator:
 
     def __init__(
         self, seed: int = 42,
-        num_mm: int = 1, num_retail: int = 5, num_manip: int = 0,
+        num_mm: int = 1, num_retail: int = 5, num_manip: int = 1,
     ) -> None:
         self._rng = random.Random(seed)
 
@@ -248,7 +253,7 @@ class AgentOrderbookSimulator:
         self.step_count   = 0   # simulation step index passed to agents
         self.stress_until = -1
         self.calm_until   = -1
-        self.prev_mid     = 100.0
+        self.prev_mid     = BTC_START_PRICE
         self._in_stress   = False
 
         print("Warming up agent-driven orderbook (2200 steps)...", flush=True)
@@ -624,8 +629,8 @@ if __name__ == "__main__":
         help="Number of retail-trader agents (default: 5, agents source only)",
     )
     parser.add_argument(
-        "--manip", type=int, default=0, metavar="N",
-        help="Number of market-manipulator agents (default: 0, agents source only)",
+        "--manip", type=int, default=1, metavar="N",
+        help="Number of market-manipulator agents (default: 1, agents source only)",
     )
     args = parser.parse_args()
 
