@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Orderbook Debug View</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #0d0d0d; color: #c8fde0;
+    font-family: 'Courier New', monospace; font-size: 13px;
+    height: 100%; overflow: hidden;
+  }
+
+  /* ── layout ─────────────────────────────────────────── */
+  #root {
+    display: grid;
+    grid-template-rows: 38px 1fr 1fr 110px;
+    grid-template-columns: 1fr 1fr 220px;
+    gap: 6px; padding: 6px;
+    height: 100vh;
+  }
+
+  /* ── header bar ──────────────────────────────────────── */
+  #header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 16px;
+    border-bottom: 1px solid #1a3a28; padding-bottom: 6px;
+  }
+  #header .title { font-size: 1rem; color: #00ff88; letter-spacing: .15em; }
+  #state-pill {
+    padding: 2px 10px; border-radius: 3px; font-size: .75rem;
+    letter-spacing: .12em; border: 1px solid #00ff8844;
+    background: #001a0d; color: #00ff88;
+    transition: background .4s, color .4s, border-color .4s;
+  }
+  #state-pill.OK        { color:#00ff88; border-color:#00ff8866; background:#001a0d; }
+  #state-pill.ALERT     { color:#ffaa00; border-color:#ffaa0066; background:#1a0d00; }
+  #state-pill.SAFE_MODE { color:#ff5500; border-color:#ff550066; background:#1a0500; }
+  #state-pill.HALT      { color:#ff1111; border-color:#ff111166; background:#1a0000;
+                           animation: blink .4s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+  #conn-pill {
+    margin-left: auto; padding: 2px 10px; border-radius: 3px;
+    font-size: .7rem; letter-spacing: .1em;
+    color: #555; border: 1px solid #333;
+  }
+  #conn-pill.live  { color: #00ff88; border-color: #00ff8844; }
+  #conn-pill.error { color: #ff4444; border-color: #ff444444; }
+  .hstat { font-size: .72rem; color: #80c9a0; }
+  .hstat span { color: #c8fde0; margin-left: 4px; }
+
+  /* ── panels ──────────────────────────────────────────── */
+  .panel {
+    background: #111; border: 1px solid #1a3a28;
+    border-radius: 5px; padding: 8px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .panel-title {
+    font-size: .68rem; color: #4a8a6a; letter-spacing: .12em;
+    text-transform: uppercase; margin-bottom: 5px; flex-shrink: 0;
+  }
+  .chart-wrap { flex: 1; min-height: 0; position: relative; }
+
+  /* ── price panel (top-left, spans 2 cols) ────────────── */
+  #price-panel { grid-column: 1 / 3; }
+
+  /* ── positions panel (top-right) ─────────────────────── */
+  #pos-panel { grid-column: 3; grid-row: 2; }
+
+  /* ── spread panel (mid-left) ──────────────────────────── */
+  #spread-panel { grid-column: 1; grid-row: 3; }
+
+  /* ── depth panel (mid-centre) ────────────────────────── */
+  #depth-panel { grid-column: 2; grid-row: 3; }
+
+  /* ── stats panel (mid-right) ──────────────────────────── */
+  #stats-panel { grid-column: 3; grid-row: 3; }
+  .stat-row { display: flex; justify-content: space-between;
+              padding: 3px 0; border-bottom: 1px solid #1a3a28; }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: #4a8a6a; }
+  .stat-val   { color: #c8fde0; }
+  .stat-val.red   { color: #ff5555; }
+  .stat-val.green { color: #00ff88; }
+  .stat-val.amber { color: #ffaa00; }
+
+  /* ── trades table (bottom, full width) ───────────────── */
+  #trades-panel { grid-column: 1 / -1; grid-row: 4; }
+  #trades-wrap {
+    flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 2px;
+  }
+  .trade-row {
+    display: grid; grid-template-columns: 70px 1fr 70px 80px 1fr;
+    gap: 6px; font-size: .7rem; padding: 1px 4px;
+    border-radius: 2px; animation: slide-in .3s ease;
+  }
+  @keyframes slide-in { from { opacity:0; transform: translateX(-8px); } }
+  .trade-row.buy  { border-left: 2px solid #00ff88; background: #001a0d44; }
+  .trade-row.sell { border-left: 2px solid #ff5555; background: #1a000044; }
+  .trade-row .side-buy  { color: #00ff88; }
+  .trade-row .side-sell { color: #ff5555; }
+  .trade-hdr {
+    display: grid; grid-template-columns: 70px 1fr 70px 80px 1fr;
+    gap: 6px; font-size: .65rem; color: #4a8a6a; padding: 0 4px 3px;
+    border-bottom: 1px solid #1a3a28; flex-shrink: 0;
+  }
+  /* ── state strip ──────────────────────────────────────── */
+  #state-strip-wrap { display: flex; height: 6px; flex-shrink: 0; margin-bottom: 3px; gap: 1px; }
+  .ss-block { flex: 1; border-radius: 1px; }
+  .ss-OK        { background: #00ff88; }
+  .ss-ALERT     { background: #ffaa00; }
+  .ss-SAFE_MODE { background: #ff5500; }
+  .ss-HALT      { background: #ff1111; }
+</style>
+</head>
+<body>
+<div id="root">
+
+  <!-- ── Header ─────────────────────────────────────────── -->
+  <div id="header">
+    <span class="title">ORDERBOOK DEBUG</span>
+    <span id="state-pill" class="OK">OK</span>
+    <span class="hstat">Mid <span id="h-mid">—</span></span>
+    <span class="hstat">Spread <span id="h-spread">—</span></span>
+    <span class="hstat">Trades <span id="h-trades">—</span></span>
+    <span class="hstat">MM pos <span id="h-mmpos">—</span></span>
+    <span class="hstat">MM P&amp;L <span id="h-mmpnl">—</span></span>
+    <span id="conn-pill">DISCONNECTED</span>
+  </div>
+
+  <!-- ── Price chart ────────────────────────────────────── -->
+  <div class="panel" id="price-panel">
+    <div class="panel-title">Mid Price + Trade Executions</div>
+    <div id="state-strip-wrap"></div>
+    <div class="chart-wrap"><canvas id="price-chart"></canvas></div>
+  </div>
+
+  <!-- ── Agent Positions chart ──────────────────────────── -->
+  <div class="panel" id="pos-panel">
+    <div class="panel-title">Agent Positions</div>
+    <div class="chart-wrap"><canvas id="pos-chart"></canvas></div>
+  </div>
+
+  <!-- ── Spread chart ───────────────────────────────────── -->
+  <div class="panel" id="spread-panel">
+    <div class="panel-title">Spread (bps) vs Thresholds</div>
+    <div class="chart-wrap"><canvas id="spread-chart"></canvas></div>
+  </div>
+
+  <!-- ── Order-book depth ───────────────────────────────── -->
+  <div class="panel" id="depth-panel">
+    <div class="panel-title">Live Orderbook Depth</div>
+    <div class="chart-wrap"><canvas id="depth-chart"></canvas></div>
+  </div>
+
+  <!-- ── Stats ──────────────────────────────────────────── -->
+  <div class="panel" id="stats-panel">
+    <div class="panel-title">Live Stats</div>
+    <div id="stats-body"></div>
+  </div>
+
+  <!-- ── Recent Trades ──────────────────────────────────── -->
+  <div class="panel" id="trades-panel">
+    <div class="panel-title">Recent Executions</div>
+    <div id="trades-wrap">
+      <div class="trade-hdr">
+        <span>#</span><span>Price</span><span>Qty</span><span>Side</span><span>Reason / State</span>
+      </div>
+      <div id="trades-body"></div>
+    </div>
+  </div>
+
+</div><!-- #root -->
+
+<script>
+'use strict';
+
+const WS_URL   = 'ws://localhost:8765';
+const MAX_PTS  = 120;   // rolling window for time-series charts
+const ALERT_SPREAD = 40, HALT_SPREAD = 80;
+
+// ── rolling buffers ────────────────────────────────────────────────────────
+const times       = [];   // label strings
+const midPrices   = [];
+const bidPrices   = [];
+const askPrices   = [];
+const spreads     = [];
+const stateHist   = [];   // for state strip
+const tradeLog    = [];   // {price, qty, side, state, ts}
+
+let lastTradeCount = 0;
+let tradeSeq       = 0;
+
+function push(arr, val) {
+  arr.push(val);
+  if (arr.length > MAX_PTS) arr.shift();
+}
+
+// ── Chart.js defaults ─────────────────────────────────────────────────────
+Chart.defaults.color          = '#4a8a6a';
+Chart.defaults.borderColor    = '#1a3a28';
+Chart.defaults.font.family    = "'Courier New', monospace";
+Chart.defaults.font.size      = 11;
+
+const CHART_OPTS = {
+  animation:  false,
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { display: false }, tooltip: { enabled: false } },
+  scales: {
+    x: { display: false },
+    y: { grid: { color: '#1a3a2855' }, ticks: { maxTicksLimit: 5 } },
+  },
+};
+
+// ── Price chart ────────────────────────────────────────────────────────────
+const priceCtx = document.getElementById('price-chart').getContext('2d');
+const priceChart = new Chart(priceCtx, {
+  type: 'line',
+  data: {
+    labels: times,
+    datasets: [
+      { label: 'Ask', data: askPrices, borderColor: '#ff555566', borderWidth: 1,
+        pointRadius: 0, fill: false, tension: 0, borderDash: [3,3] },
+      { label: 'Bid', data: bidPrices, borderColor: '#00ff8866', borderWidth: 1,
+        pointRadius: 0, fill: false, tension: 0, borderDash: [3,3] },
+      { label: 'Mid', data: midPrices, borderColor: '#c8fde0', borderWidth: 1.5,
+        pointRadius: 0, fill: false, tension: 0 },
+      // Trade scatter — rendered as a separate dataset with point dots
+      { label: 'Trades', data: [], borderColor: 'transparent',
+        backgroundColor: ctx => ctx.raw?.side === 'buy' ? '#00ff88bb' : '#ff5555bb',
+        pointRadius: 4, pointStyle: 'circle', type: 'scatter',
+        parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
+    ],
+  },
+  options: { ...CHART_OPTS, scales: { ...CHART_OPTS.scales,
+    y: { ...CHART_OPTS.scales.y, ticks: { maxTicksLimit: 6, callback: v => v.toFixed(2) } }
+  }},
+});
+
+// ── Spread chart ───────────────────────────────────────────────────────────
+const spreadCtx = document.getElementById('spread-chart').getContext('2d');
+const spreadChart = new Chart(spreadCtx, {
+  type: 'line',
+  data: {
+    labels: times,
+    datasets: [
+      { data: spreads, borderColor: '#44aaff', borderWidth: 1.5,
+        pointRadius: 0, fill: { target: 'origin', above: '#44aaff11' }, tension: 0 },
+      // ALERT threshold line
+      { data: Array(MAX_PTS).fill(ALERT_SPREAD), borderColor: '#ffaa0055',
+        borderWidth: 1, pointRadius: 0, borderDash: [4,4], fill: false, tension: 0 },
+      // HALT threshold line
+      { data: Array(MAX_PTS).fill(HALT_SPREAD), borderColor: '#ff444455',
+        borderWidth: 1, pointRadius: 0, borderDash: [2,4], fill: false, tension: 0 },
+    ],
+  },
+  options: { ...CHART_OPTS },
+});
+
+// ── Positions bar chart ────────────────────────────────────────────────────
+const posCtx = document.getElementById('pos-chart').getContext('2d');
+const posChart = new Chart(posCtx, {
+  type: 'bar',
+  data: {
+    labels: ['MM', 'RT-0', 'RT-1', 'RT-2', 'RT-3', 'RT-4'],
+    datasets: [{
+      data:            [0, 0, 0, 0, 0, 0],
+      backgroundColor: pos => pos.raw >= 0 ? '#00ff8877' : '#ff555577',
+      borderColor:     pos => pos.raw >= 0 ? '#00ff88'   : '#ff5555',
+      borderWidth: 1,
+    }],
+  },
+  options: {
+    ...CHART_OPTS,
+    scales: {
+      x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+      y: { ...CHART_OPTS.scales.y, ticks: { maxTicksLimit: 5 } },
+    },
+    plugins: { legend: { display: false }, tooltip: { enabled: true } },
+  },
+});
+
+// ── Depth chart (horizontal bars) ─────────────────────────────────────────
+const depthCtx = document.getElementById('depth-chart').getContext('2d');
+const depthChart = new Chart(depthCtx, {
+  type: 'bar',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'Bids', data: [], backgroundColor: '#00ff8866', borderColor: '#00ff88', borderWidth: 1 },
+      { label: 'Asks', data: [], backgroundColor: '#ff555566', borderColor: '#ff5555', borderWidth: 1 },
+    ],
+  },
+  options: {
+    ...CHART_OPTS,
+    indexAxis: 'y',
+    scales: {
+      x: { grid: { color: '#1a3a2855' }, stacked: false, ticks: { maxTicksLimit: 4 } },
+      y: { grid: { display: false }, ticks: { font: { size: 9 }, maxTicksLimit: 10 } },
+    },
+    plugins: { legend: { display: true, labels: { color: '#4a8a6a', boxWidth: 10 } } },
+  },
+});
+
+// ── State strip ────────────────────────────────────────────────────────────
+function updateStateStrip(state) {
+  stateHist.push(state);
+  if (stateHist.length > MAX_PTS) stateHist.shift();
+  const wrap = document.getElementById('state-strip-wrap');
+  wrap.innerHTML = stateHist
+    .map(s => `<div class="ss-block ss-${s}"></div>`)
+    .join('');
+}
+
+// ── Stats panel ────────────────────────────────────────────────────────────
+function updateStats(d, state, reasons) {
+  const pnlClass = d.mm_pnl >= 0 ? 'green' : 'red';
+  const posClass = d.mm_position > 0 ? 'amber' : d.mm_position < 0 ? 'red' : 'green';
+  document.getElementById('stats-body').innerHTML = `
+    <div class="stat-row"><span class="stat-label">Bid</span>
+      <span class="stat-val green">${d.bid ?? '—'}</span></div>
+    <div class="stat-row"><span class="stat-label">Ask</span>
+      <span class="stat-val red">${d.ask ?? '—'}</span></div>
+    <div class="stat-row"><span class="stat-label">Total trades</span>
+      <span class="stat-val">${d.total_trades}</span></div>
+    <div class="stat-row"><span class="stat-label">MM pos</span>
+      <span class="stat-val ${posClass}">${d.mm_position}</span></div>
+    <div class="stat-row"><span class="stat-label">MM P&amp;L</span>
+      <span class="stat-val ${pnlClass}">${d.mm_pnl?.toFixed(2)}</span></div>
+    <div class="stat-row"><span class="stat-label">State</span>
+      <span class="stat-val">${state}</span></div>
+    ${reasons.length ? `<div class="stat-row"><span class="stat-label" style="color:#ff8844">Reasons</span>
+      <span class="stat-val" style="font-size:.6rem;color:#ff8844;word-break:break-all">${reasons.slice(0,2).join(', ')}</span></div>` : ''}
+  `;
+}
+
+// ── Depth chart update ─────────────────────────────────────────────────────
+function updateDepth(bids, asks) {
+  // Merge bid and ask price levels for a shared y-axis
+  const bidPrices = bids.map(b => b[0].toFixed(2));
+  const askPrices = asks.map(a => a[0].toFixed(2));
+  // Show asks (ascending) then bids (descending) as a ladder
+  const labels = [
+    ...askPrices.reverse(),
+    ...bidPrices,
+  ];
+  const bidData  = Array(askPrices.length).fill(0).concat(bids.map(b => b[1]));
+  const askData  = asks.map(a => a[1]).reverse().concat(Array(bidPrices.length).fill(0));
+
+  depthChart.data.labels           = labels;
+  depthChart.data.datasets[0].data = bidData;
+  depthChart.data.datasets[1].data = askData;
+  depthChart.update('none');
+}
+
+// ── Trades panel ──────────────────────────────────────────────────────────
+function addTrade(trade, state) {
+  tradeSeq++;
+  tradeLog.unshift({ seq: tradeSeq, ...trade, state });
+  if (tradeLog.length > 8) tradeLog.pop();
+  const body = document.getElementById('trades-body');
+  body.innerHTML = tradeLog.map(t => `
+    <div class="trade-row ${t.side ?? 'buy'}">
+      <span style="color:#4a8a6a">#${t.seq}</span>
+      <span>${t.price?.toFixed(3)}</span>
+      <span>${t.qty}</span>
+      <span class="side-${t.side ?? 'buy'}">${(t.side ?? '?').toUpperCase()}</span>
+      <span style="color:#4a8a6a">${t.state}</span>
+    </div>`).join('');
+}
+
+// ── Main payload handler ───────────────────────────────────────────────────
+function applyPayload(data) {
+  const d       = data.debug  || {};
+  const sm      = data.smoothed_metrics || {};
+  const state   = data.state  || 'OK';
+  const reasons = data.reasons || [];
+
+  // Time label
+  const t = new Date(data.timestamp * 1000).toISOString().slice(14, 23);
+
+  // Header
+  document.getElementById('h-mid').textContent    = d.mid?.toFixed(3)    ?? '—';
+  document.getElementById('h-spread').textContent = sm.spread_bps?.toFixed(1) + ' bps' ?? '—';
+  document.getElementById('h-trades').textContent = d.total_trades ?? '—';
+  document.getElementById('h-mmpos').textContent  = d.mm_position  ?? '—';
+  document.getElementById('h-mmpnl').textContent  = d.mm_pnl != null ? '$' + d.mm_pnl.toFixed(0) : '—';
+
+  const pill = document.getElementById('state-pill');
+  pill.textContent = state.replace('_', ' ');
+  pill.className   = state;
+
+  // State strip
+  updateStateStrip(state);
+
+  // Price chart
+  push(times,     t);
+  push(midPrices, d.mid  ?? null);
+  push(bidPrices, d.bid  ?? null);
+  push(askPrices, d.ask  ?? null);
+  push(spreads,   sm.spread_bps ?? null);
+
+  // New trades (compare total_trades to detect new executions)
+  if (d.total_trades > lastTradeCount && d.recent_trades?.length) {
+    const newCount = d.total_trades - lastTradeCount;
+    d.recent_trades.slice(0, newCount).forEach(tr => {
+      // Infer side from which order was the aggressor (price relative to mid)
+      const side = tr.price >= (d.mid ?? tr.price) ? 'buy' : 'sell';
+      addTrade({ ...tr, side }, state);
+      // Add to scatter on price chart
+      const pts = priceChart.data.datasets[3].data;
+      pts.push({ x: times.length - 1, y: tr.price, side });
+      if (pts.length > MAX_PTS) pts.shift();
+    });
+    lastTradeCount = d.total_trades;
+  }
+
+  priceChart.update('none');
+  spreadChart.update('none');
+
+  // Positions
+  if (d.mm_position != null) {
+    const posData = [d.mm_position, ...(d.retail_positions || [])];
+    posChart.data.datasets[0].data            = posData;
+    posChart.data.datasets[0].backgroundColor = posData.map(v => v >= 0 ? '#00ff8877' : '#ff555577');
+    posChart.data.datasets[0].borderColor     = posData.map(v => v >= 0 ? '#00ff88'   : '#ff5555');
+    posChart.update('none');
+  }
+
+  // Depth
+  if (d.depth_bids?.length || d.depth_asks?.length) {
+    updateDepth(d.depth_bids || [], d.depth_asks || []);
+  }
+
+  // Stats
+  updateStats(d, state, reasons);
+}
+
+// ── WebSocket ──────────────────────────────────────────────────────────────
+let ws = null, reconnTimer = null;
+
+function connect() {
+  if (ws) ws.close();
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    const el = document.getElementById('conn-pill');
+    el.textContent = 'LIVE'; el.className = 'live';
+    if (reconnTimer) { clearTimeout(reconnTimer); reconnTimer = null; }
+  };
+  ws.onmessage = ev => {
+    try { applyPayload(JSON.parse(ev.data)); }
+    catch (e) { console.warn('parse error', e); }
+  };
+  ws.onerror = ws.onclose = () => {
+    const el = document.getElementById('conn-pill');
+    el.textContent = 'RECONNECTING'; el.className = 'error';
+    if (!reconnTimer) reconnTimer = setTimeout(connect, 2000);
+  };
+}
+
+connect();
+</script>
+</body>
+</html>

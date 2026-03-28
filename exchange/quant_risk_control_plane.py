@@ -21,19 +21,19 @@ class Action(str, Enum):
 class Thresholds:
     stale_market_seconds: float = 1.5
     hard_stale_market_seconds: float = 5.0
-    max_latency_ms: float = 35.0
-    hard_latency_ms: float = 75.0
+    max_latency_ms: float = 50.0    # normal ~8 ms, stress ~58 ms → alert on stress
+    hard_latency_ms: float = 100.0  # only halt on extreme spikes
     max_reject_rate: float = 0.08
     hard_reject_rate: float = 0.15
     max_drawdown: float = 25_000.0
     hard_drawdown: float = 50_000.0
-    psi_alert: float = 0.20
-    psi_halt: float = 0.35
+    psi_alert: float = 0.25         # raised: brief distributional shifts → ALERT
+    psi_halt: float = 0.60          # raised: only sustained heavy drift → SAFE_MODE
     min_reference_points: int = 300
     min_live_points: int = 120
     zscore_alert: float = 5.0
     zscore_halt: float = 8.0
-    max_spread_bps: float = 40.0
+    max_spread_bps: float = 60.0    # raised: stress MM quotes ~40 bps, normal ~10 bps
 
 
 @dataclass
