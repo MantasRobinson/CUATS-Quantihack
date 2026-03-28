@@ -119,8 +119,48 @@ class LiveDashboard:
         self.spreads    = deque(maxlen=WINDOW)
         self.trade_rate = deque(maxlen=WINDOW)
         self.positions  = {a.name: deque(maxlen=WINDOW) for a in sim.agents}
+        self._depth_volume_floor = self._estimate_depth_volume_floor()
 
         self._build_figure()
+
+    def _estimate_depth_volume_floor(self) -> int:
+        """Use the sim's configured order sizes to keep depth scaling readable."""
+        sizes = []
+
+        mm_cfg = getattr(self.mm, "config", None)
+        if mm_cfg is not None:
+            sizes.append(getattr(mm_cfg, "quote_size", 0))
+
+        manip_cfg = getattr(self.manip, "config", None)
+        if manip_cfg is not None:
+            sizes.extend([
+                getattr(manip_cfg, "spoof_size", 0),
+                getattr(manip_cfg, "pump_size", 0),
+                getattr(manip_cfg, "dump_size", 0),
+                getattr(manip_cfg, "wash_size", 0),
+            ])
+
+        for agent in self.sim.agents:
+            cfg = getattr(agent, "config", None)
+            if cfg is None:
+                continue
+            sizes.append(getattr(cfg, "quote_size", 0))
+            sizes.append(getattr(cfg, "max_size", 0))
+
+        return max(max(sizes, default=1), 1)
+
+    @staticmethod
+    def _depth_bar_width(prices: list[float]) -> float:
+        """Scale bar width from the visible price ladder instead of a fixed toy value."""
+        if len(prices) >= 2:
+            gaps = [
+                abs(b - a)
+                for a, b in zip(sorted(prices), sorted(prices)[1:])
+                if abs(b - a) > 0
+            ]
+            if gaps:
+                return max(min(gaps) * 0.75, 0.5)
+        return 10.0
 
     # ── Figure construction ──────────────────────────────────────────
 
@@ -333,7 +373,7 @@ class LiveDashboard:
                 ap = [p for p, v in depth["asks"]]
                 av = [v for p, v in depth["asks"]]
 
-                bar_w = 0.06
+                bar_w = self._depth_bar_width(bp + ap)
                 if bp:
                     self._depth_bars_bid = self.ax_depth.bar(
                         bp, bv, width=bar_w, color="#4CAF50", alpha=0.85,
@@ -344,9 +384,12 @@ class LiveDashboard:
                         label="Asks" if not self._depth_legend_added else "_")
                 if bp or ap:
                     allp = bp + ap
-                    self.ax_depth.set_xlim(min(allp) - 0.5, max(allp) + 0.5)
+                    pad_x = max(bar_w, 5.0)
+                    self.ax_depth.set_xlim(min(allp) - pad_x, max(allp) + pad_x)
                     allv = bv + av
-                    self.ax_depth.set_ylim(0, max(allv) * 1.2 if allv else 1)
+                    max_volume = max(allv) if allv else 1
+                    y_top = max(max_volume, self._depth_volume_floor) * 1.15
+                    self.ax_depth.set_ylim(0, y_top)
                     if not self._depth_legend_added:
                         self.ax_depth.legend(fontsize=7, facecolor="#1a1a2e",
                                              edgecolor="#333")
