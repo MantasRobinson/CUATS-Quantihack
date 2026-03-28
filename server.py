@@ -68,6 +68,27 @@ STRESS_MAX_TICKS = 420     # ~7 s
 CALM_MIN_TICKS   = 240     # ~4 s mandatory calm after each stress
 
 
+def build_agent_sim_thresholds() -> Thresholds:
+    """Thresholds tuned for the built-in agent simulator.
+
+    These are intentionally looser than the generic control-plane defaults:
+    the local agent sim uses synthetic market structure and does not provide a
+    strategy-level realized PnL series, so we avoid letting proxy PnL and brief
+    spread shocks dominate the state machine.
+    """
+    return Thresholds(
+        max_latency_ms=75.0,
+        hard_latency_ms=125.0,
+        max_drawdown=1e18,
+        hard_drawdown=1e18,
+        psi_alert=0.35,
+        psi_halt=0.75,
+        zscore_alert=6.0,
+        zscore_halt=10.0,
+        max_spread_bps=100.0,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PID Controller
 # ─────────────────────────────────────────────────────────────────────────────
@@ -217,7 +238,7 @@ class AgentOrderbookSimulator:
             self._manip.append(ma)
 
         # ── risk monitor ─────────────────────────────────────────────────
-        self.thresholds = Thresholds()
+        self.thresholds = build_agent_sim_thresholds()
         self.monitor    = StrategyHealthMonitor(
             thresholds=self.thresholds,
             feature_names=["ret_1s", "imbalance"],
