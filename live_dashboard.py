@@ -1,18 +1,21 @@
-"""Live simulation dashboard — runs its own agent simulation and displays it.
+"""Live dashboard — anchors the simulation to a live BTC feed when available.
 
 Usage:
     python live_dashboard.py                         # 1 MM, 5 retail, 1 manip
     python live_dashboard.py --mm 1 --retail 3 --manip 1
-    python live_dashboard.py --manip 2               # add 2 manipulators
+    python live_dashboard.py --market-source simulated
 
 Press Q or close the window to stop.
 
-Note: run server.py with the same flags to get matching configs over WebSocket.
+By default the dashboard polls Live Coin Watch and uses the live BTC price
+as the anchor for the market maker, so the other agents trade around the real
+price path rather than a purely synthetic one.
 """
 
 from __future__ import annotations
 
 import argparse
+import threading
 import sys
 import traceback
 
@@ -37,6 +40,7 @@ from agents.simulation import Simulation, SimulationConfig
 from agents.market_maker import MarketMakerAgent
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.manipulator import ManipulatorAgent, ManipulatorConfig
+from exchange.kafka_ingestion import iter_livecoinwatch_market_events
 from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
 
 
@@ -47,6 +51,8 @@ from btc_sim_config import BTC_ASSET, build_btc_market_maker_config
 WINDOW          = 600    # steps of history visible on screen
 STEPS_PER_FRAME = 3      # sim steps computed per animation frame
 FRAME_MS        = 80     # milliseconds between frames (~12 fps)
+LIVECOINWATCH_POLL_INTERVAL_S = 5.0
+LIVECOINWATCH_SYNTHETIC_SPREAD_BPS = 10.0
 
 AGENT_COLORS = {
     "MM":    "#E91E63",
@@ -70,6 +76,41 @@ _RETAIL_CFGS = [
     RetailTraderConfig(activity_rate=0.20, min_size=1, max_size=8,
                        trend_sensitivity=0.1, limit_order_pct=0.5, max_position=50),
 ]
+
+
+class LiveCoinWatchFeed:
+    """Background poller for Live Coin Watch BTC snapshots."""
+
+    def __init__(self, poll_interval_s: float = LIVECOINWATCH_POLL_INTERVAL_S):
+        self.poll_interval_s = poll_interval_s
+        self._lock = threading.Lock()
+        self._snapshot: dict[str, object] | None = None
+        self._error: str | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            for snapshot in iter_livecoinwatch_market_events(
+                poll_interval_s=self.poll_interval_s,
+                synthetic_spread_bps=LIVECOINWATCH_SYNTHETIC_SPREAD_BPS,
+            ):
+                with self._lock:
+                    self._snapshot = snapshot
+                    self._error = None
+        except Exception as exc:  # pragma: no cover - background thread guard
+            with self._lock:
+                self._error = str(exc)
+
+    def latest(self) -> dict[str, object] | None:
+        with self._lock:
+            if self._snapshot is None:
+                return None
+            return dict(self._snapshot)
+
+    def error(self) -> str | None:
+        with self._lock:
+            return self._error
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -117,9 +158,10 @@ def build_simulation(num_mm: int = 1, num_retail: int = 5, num_manip: int = 1):
 
 class LiveDashboard:
 
-    def __init__(self, sim: Simulation, mm: MarketMakerAgent | None):
+    def __init__(self, sim: Simulation, mm: MarketMakerAgent | None, live_feed: LiveCoinWatchFeed | None = None):
         self.sim = sim
         self.mm  = mm
+        self.live_feed = live_feed
         self.step = 0
         self.prev_trade_count = 0
 
@@ -129,6 +171,10 @@ class LiveDashboard:
         self.bids       = deque(maxlen=WINDOW)
         self.asks       = deque(maxlen=WINDOW)
         self.spreads    = deque(maxlen=WINDOW)
+        self.live_mids  = deque(maxlen=WINDOW)
+        self.live_bids  = deque(maxlen=WINDOW)
+        self.live_asks  = deque(maxlen=WINDOW)
+        self.live_latency_ms = deque(maxlen=WINDOW)
         self.trade_rate = deque(maxlen=WINDOW)
         self.positions  = {a.name: deque(maxlen=WINDOW) for a in sim.agents}
         self._depth_volume_floor = self._estimate_depth_volume_floor()
@@ -196,7 +242,7 @@ class LiveDashboard:
 
         agent_summary = ", ".join(a.name for a in self.sim.agents)
         self.fig.suptitle(
-            f"CUATS Live Market Simulation  [{agent_summary}]",
+            f"CUATS Live Market Dashboard  [{agent_summary}]",
             fontsize=14, fontweight="bold", color="#00E5FF", y=0.97,
         )
 
@@ -274,6 +320,20 @@ class LiveDashboard:
 
     def _tick(self):
         """Run one simulation step and record data."""
+        live_snapshot = self.live_feed.latest() if self.live_feed is not None else None
+        live_mid = None
+        live_bid = None
+        live_ask = None
+        live_latency_ms = None
+        if live_snapshot:
+            live_mid = float(live_snapshot.get("mid") or live_snapshot.get("price") or 0.0)
+            live_bid = float(live_snapshot.get("bid") or live_mid or 0.0)
+            live_ask = float(live_snapshot.get("ask") or live_mid or 0.0)
+            live_latency_ms = float(live_snapshot.get("venue_latency_ms") or 0.0)
+            for agent in self.sim.agents:
+                if isinstance(agent, MarketMakerAgent):
+                    agent.sync_reference_price(live_mid)
+
         self.sim._rng.shuffle(self.sim.agents)
         for agent in self.sim.agents:
             agent.step(self.step)
@@ -292,16 +352,25 @@ class LiveDashboard:
         self.prev_trade_count = tc
 
         self.steps.append(self.step)
-        self.mids.append(mid)
-        self.bids.append(bid_p)
-        self.asks.append(ask_p)
-        self.spreads.append(spread)
+        display_mid = live_mid if live_mid is not None else mid
+        display_bid = live_bid if live_bid is not None else bid_p
+        display_ask = live_ask if live_ask is not None else ask_p
+        display_spread = (display_ask - display_bid) if (display_bid and display_ask) else spread
+
+        self.mids.append(display_mid)
+        self.bids.append(display_bid)
+        self.asks.append(display_ask)
+        self.spreads.append(display_spread)
+        self.live_mids.append(live_mid)
+        self.live_bids.append(live_bid)
+        self.live_asks.append(live_ask)
+        self.live_latency_ms.append(live_latency_ms)
         self.trade_rate.append(new)
         for a in self.sim.agents:
             self.positions[a.name].append(a.state.position)
 
         self.step += 1
-        return mid, spread, tc
+        return display_mid, display_spread, tc
 
     # ── Animation callback ───────────────────────────────────────────
 
@@ -336,10 +405,7 @@ class LiveDashboard:
             sp = list(self.spreads)
             self.ln_spread.set_data(x, sp)
             self.ax_spread.set_xlim(x[0], x[-1])
-            if sp:
-                sp_min, sp_max = min(sp), max(sp)
-                sp_pad = max(sp_max - sp_min, sp_max * 0.01) * 0.15
-                self.ax_spread.set_ylim(sp_min - sp_pad, sp_max + sp_pad)
+            self.ax_spread.set_ylim(0, max(max(sp) * 1.3, 0.1) if sp else 1)
 
             # — Trade rate (smoothed) —
             rates = list(self.trade_rate)
@@ -361,7 +427,7 @@ class LiveDashboard:
             self.ax_pos.set_xlim(x[0], x[-1])
             if all_p:
                 lo, hi = min(all_p), max(all_p)
-                pad = max(abs(hi - lo), 1) * 0.12
+                pad = max(abs(hi - lo), 10) * 0.15
                 self.ax_pos.set_ylim(lo - pad, hi + pad)
 
             # — Depth (full redraw) —
@@ -391,12 +457,14 @@ class LiveDashboard:
                                      edgecolor="#333")
 
             # — Stats —
-            mid_s  = f"{mid:.3f}" if mid else "---"
+            mid_s  = f"{mid:.3f}" if mid is not None else "---"
+            source_s = "Live Coin Watch" if any(v is not None for v in self.live_mids) else "Simulation fallback"
+            latency_s = f"{self.live_latency_ms[-1]:.0f}ms" if self.live_latency_ms and self.live_latency_ms[-1] is not None else "n/a"
             mm_s   = (f"MM pos {self.mm.state.position:+d}  fills {self.mm.state.total_fills:,}"
                       if self.mm else "no MM")
             self.stats_txt.set_text(
                 f"  Step {self.step:,}  |  Mid {mid_s}  |  "
-                f"Spread {spread:.4f}  |  Trades {tc:,}  |  {mm_s}  "
+                f"Spread {spread:.4f}  |  Trades {tc:,}  |  {mm_s}  |  {source_s} ({latency_s})  "
             )
 
             # Flush events so Windows doesn't show "not responding" cursor
@@ -429,11 +497,23 @@ if __name__ == "__main__":
                         help="Number of retail-trader agents (default: 5)")
     parser.add_argument("--manip",  type=int, default=1, metavar="N",
                         help="Number of market-manipulator agents (default: 1)")
+    parser.add_argument(
+        "--market-source",
+        choices=("livecoinwatch", "simulated"),
+        default="livecoinwatch",
+        help="Choose a live BTC feed or keep the historical simulation price path.",
+    )
     args = parser.parse_args()
 
     print(f"Building simulation: {args.mm} MM  {args.retail} Retail  {args.manip} Manip")
     sim, mm = build_simulation(
         num_mm=args.mm, num_retail=args.retail, num_manip=args.manip,
     )
-    dash = LiveDashboard(sim, mm)
+
+    live_feed = None
+    if args.market_source == "livecoinwatch":
+        print("Starting Live Coin Watch feed")
+        live_feed = LiveCoinWatchFeed()
+
+    dash = LiveDashboard(sim, mm, live_feed=live_feed)
     dash.run()
