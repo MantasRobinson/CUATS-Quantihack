@@ -45,6 +45,7 @@ from agents.market_maker import MarketMakerAgent, MarketMakerConfig
 from agents.retail_trader import RetailTraderAgent, RetailTraderConfig
 from agents.simulation import Simulation, SimulationConfig
 from btc_sim_config import BTC_ASSET, BTC_START_PRICE, build_btc_market_maker_config
+from exchange.kafka_ingestion import iter_livecoinwatch_market_events
 from exchange.quant_risk_control_plane import (
     MarketEvent,
     OrderEvent,
@@ -62,6 +63,7 @@ MARKET_RATE  = 10          # market events per second (every 6th broadcast tick)
 MARKET_EVERY = TICK_RATE // MARKET_RATE
 HOST         = "localhost"
 PORT         = 8765
+LIVECOINWATCH_URL = "https://www.livecoinwatch.com/price/Bitcoin-BTC"
 
 STRESS_CHANCE    = 0.005   # probability per tick of triggering a stress event
 STRESS_MIN_TICKS = 90      # ~1.5 s at 60 Hz
@@ -83,12 +85,42 @@ def build_agent_sim_thresholds() -> Thresholds:
         max_drawdown=1e18,
         hard_drawdown=1e18,
         psi_alert=1.5,          # loose — only genuine regime shifts trigger ALERT
-        psi_halt=0,#4.0,           # very loose — only extreme distributional breaks
+        psi_halt=4.0,           # very loose — only extreme distributional breaks
         min_reference_points=200,
         min_live_points=80,
         zscore_alert=8.0,
-        zscore_halt=0,#18.0,
+        zscore_halt=18.0,
         max_spread_bps=150.0,   # stress MM quotes ~40 bps, give headroom
+    )
+
+
+def build_livecoinwatch_thresholds() -> Thresholds:
+    """Thresholds tuned for external Live Coin Watch polling.
+
+    The live BTC feed is fetched over HTTP, but control-plane latency is now
+    separated from external fetch RTT. That means the decision thresholds can
+    stay close to exchange-like real-time market data systems.
+
+    Because this source is polled rather than streamed, market-data staleness
+    must remain looser than an exchange feed, but still tight enough to catch a
+    broken connection quickly.
+    """
+    return Thresholds(
+        stale_market_seconds=10.0,
+        hard_stale_market_seconds=30.0,
+        max_latency_ms=80.0,
+        hard_latency_ms=200.0,
+        max_reject_rate=0.08,
+        hard_reject_rate=0.15,
+        max_drawdown=1e18,
+        hard_drawdown=1e18,
+        psi_alert=1.5,
+        psi_halt=4.0,
+        min_reference_points=200,
+        min_live_points=80,
+        zscore_alert=8.0,
+        zscore_halt=18.0,
+        max_spread_bps=150.0,
     )
 
 
@@ -100,6 +132,29 @@ def build_agent_sim_stress_mm_config() -> MarketMakerConfig:
         num_levels=2,
         level_spacing=35.0,
         annual_vol=1.20,
+    )
+
+
+def _kafka_api_version(default: tuple[int, ...] = (0, 10, 0)) -> tuple[int, ...]:
+    raw = os.getenv("KAFKA_API_VERSION")
+    if not raw:
+        return default
+    try:
+        parts = tuple(int(p) for p in raw.split(".") if p != "")
+        return parts if parts else default
+    except ValueError:
+        return default
+
+
+def _kafka_preflight_hint(brokers: str, exc: Exception) -> str:
+    api_version = ".".join(str(p) for p in _kafka_api_version())
+    return (
+        f"\n[kafka] Cannot reach broker at {brokers}:\n"
+        f"  {exc}\n\n"
+        f"Suggested checks:\n"
+        f"  - verify KAFKA_BROKERS points at a running broker\n"
+        f"  - set KAFKA_API_VERSION={api_version} if your broker is older/newer\n"
+        f"  - if you do not need Kafka, run: python server.py --source agents\n"
     )
 
 
@@ -481,19 +536,12 @@ class KafkaSource:
             probe = kafka_mod.KafkaAdminClient(
                 bootstrap_servers=[b.strip() for b in brokers.split(",") if b.strip()],
                 request_timeout_ms=4000,
+                api_version=_kafka_api_version(),
             )
             probe.close()
             print(f"[kafka] Broker reachable.", flush=True)
         except Exception as exc:
-            print(
-                f"\n[kafka] Cannot reach broker at {brokers}:\n"
-                f"  {exc}\n\n"
-                f"Start a Kafka/Redpanda broker, or set KAFKA_BROKERS to the\n"
-                f"correct address, then restart the server.\n"
-                f"To use the built-in agent simulation instead, run:\n"
-                f"  python server.py --source agents\n",
-                file=sys.stderr,
-            )
+            print(_kafka_preflight_hint(brokers, exc), file=sys.stderr)
             sys.exit(1)
 
         def _consume():
@@ -544,6 +592,18 @@ class KafkaSource:
         return {
             "state":   decision.action.value,
             "reasons": decision.reasons[:5],
+            "state_driver": decision.reasons[0] if decision.reasons else "ok",
+            "decision_metrics": {
+                "spread_bps":       m.get("spread_bps"),
+                "venue_latency_ms": m.get("venue_latency_ms"),
+                "market_data_age_s": m.get("market_data_age_s"),
+                "reject_rate":      m.get("reject_rate"),
+                "drawdown":         m.get("drawdown"),
+                "ret_1s_z":         m.get("ret_1s_z"),
+                "ret_1s_psi":       m.get("ret_1s_psi"),
+                "imbalance_z":      m.get("imbalance_z"),
+                "imbalance_psi":    m.get("imbalance_psi"),
+            },
             "raw": {
                 "spread_bps":   m.get("spread_bps",       10.0),
                 "latency_ms":   m.get("venue_latency_ms",  self._last_lat),
@@ -564,13 +624,130 @@ class KafkaSource:
         }
 
 
+class LiveCoinWatchSource:
+    """Poll Live Coin Watch for BTC/USD and expose it as market data."""
+
+    def __init__(self) -> None:
+        self.thresholds = build_livecoinwatch_thresholds()
+        self.monitor    = StrategyHealthMonitor(
+            thresholds=self.thresholds,
+            feature_names=["ret_1s", "imbalance"],
+        )
+
+        self._url = os.getenv("LIVECOINWATCH_URL", LIVECOINWATCH_URL)
+        self._poll_interval_s = float(os.getenv("LIVECOINWATCH_POLL_INTERVAL_S", "5.0"))
+        self._synthetic_spread_bps = float(os.getenv("LIVECOINWATCH_SPREAD_BPS", "10.0"))
+
+        self._last_price: float | None = None
+        self._last_bid = 0.0
+        self._last_ask = 0.0
+        self._last_latency = 100.0
+        self._last_latency_ema = 100.0
+        self._control_latency_ms = 8.0
+        self._last_fetch = 0.0
+        self._total_samples = 0
+        self._queue: queue.Queue = queue.Queue()
+
+        print(f"[livecoinwatch] Polling {self._url}", flush=True)
+
+        def _consume():
+            retry_delay = 2.0
+            while True:
+                try:
+                    for payload in iter_livecoinwatch_market_events(
+                        self._url,
+                        synthetic_spread_bps=self._synthetic_spread_bps,
+                        poll_interval_s=self._poll_interval_s,
+                    ):
+                        self._queue.put(payload)
+                    retry_delay = 2.0
+                except Exception as exc:
+                    print(f"[livecoinwatch] Stream error ({exc}). Retrying in {retry_delay:.0f}s…",
+                          flush=True)
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
+
+        t = threading.Thread(target=_consume, daemon=True, name="livecoinwatch-consumer")
+        t.start()
+
+    def tick(self) -> dict:
+        now = time.time()
+
+        while True:
+            try:
+                event = self._queue.get_nowait()
+            except queue.Empty:
+                break
+
+            self._last_bid = event["bid"]
+            self._last_ask = event["ask"]
+            self._last_latency = event["venue_latency_ms"]
+            self._last_latency_ema = (
+                self._last_latency
+                if self._total_samples == 0
+                else (0.8 * self._last_latency_ema + 0.2 * self._last_latency)
+            )
+            self._last_fetch = event["ts"]
+            self._total_samples += 1
+            self._last_price = event.get("price", self._last_price)
+            self.monitor.on_market(MarketEvent(
+                ts=event["ts"],
+                bid=event["bid"],
+                ask=event["ask"],
+                features=event.get("features", {}),
+                venue_latency_ms=self._control_latency_ms,
+            ))
+
+        decision = self.monitor.evaluate(now)
+        m        = decision.metrics
+        drift_z  = abs(m.get("ret_1s_z", m.get("imbalance_z", 0.0)))
+        mid      = (self._last_bid + self._last_ask) / 2.0 if self._last_price is not None else 0.0
+
+        return {
+            "state":   decision.action.value,
+            "reasons": decision.reasons[:5],
+            "state_driver": decision.reasons[0] if decision.reasons else "ok",
+            "decision_metrics": {
+                "spread_bps":       m.get("spread_bps"),
+                "venue_latency_ms": m.get("venue_latency_ms"),
+                "market_data_age_s": m.get("market_data_age_s"),
+                "reject_rate":      m.get("reject_rate"),
+                "drawdown":         m.get("drawdown"),
+                "ret_1s_z":         m.get("ret_1s_z"),
+                "ret_1s_psi":       m.get("ret_1s_psi"),
+                "imbalance_z":      m.get("imbalance_z"),
+                "imbalance_psi":    m.get("imbalance_psi"),
+            },
+            "raw": {
+                "spread_bps":   m.get("spread_bps",       self._synthetic_spread_bps),
+                "latency_ms":   m.get("venue_latency_ms",  self._control_latency_ms),
+                "drift_zscore": drift_z,
+            },
+            "debug": {
+                "bid":              round(self._last_bid, 3) if self._last_price is not None else None,
+                "ask":              round(self._last_ask, 3) if self._last_price is not None else None,
+                "mid":              round(mid, 3) if self._last_price is not None else None,
+                "total_trades":     self._total_samples,
+                "latency_raw_ms":   round(self._last_latency, 3),
+                "latency_ema_ms":   round(self._last_latency_ema, 3),
+                "latency_control_ms": round(self._control_latency_ms, 3),
+                "mm_position":      None,
+                "mm_pnl":           None,
+                "retail_positions": [],
+                "recent_trades":    [],
+                "depth_bids":       [],
+                "depth_asks":       [],
+            },
+        }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # WebSocket server
 # ─────────────────────────────────────────────────────────────────────────────
 _clients: set = set()
 
 
-async def _broadcast_loop(source) -> None:
+async def _broadcast_loop(source, source_label: str) -> None:
     """60 Hz loop: step the matching engine, PID-smooth, broadcast."""
 
     pid: dict[str, PIDController] = {
@@ -603,6 +780,7 @@ async def _broadcast_loop(source) -> None:
 
         payload = json.dumps({
             "timestamp": time.time(),
+            "source":    source_label,
             "state":     state,
             "reasons":   reasons,
             "smoothed_metrics": {
@@ -635,7 +813,7 @@ async def _handler(websocket) -> None:
 
 
 async def _main(source, src_label: str) -> None:
-    loop_task = asyncio.create_task(_broadcast_loop(source))
+    loop_task = asyncio.create_task(_broadcast_loop(source, src_label))
     async with ws_serve(_handler, HOST, PORT):
         print(f"+----------------------------------------------+")
         print(f"|    The Synesthetic Orderbook - Server        |")
@@ -651,9 +829,9 @@ async def _main(source, src_label: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="The Synesthetic Orderbook server")
     parser.add_argument(
-        "--source", choices=["agents", "kafka"], default="agents",
-        help="Data source (default: agents). 'kafka' reads from a Kafka/Redpanda "
-             "topic — configure via KAFKA_BROKERS / KAFKA_TOPIC env vars.",
+           "--source", choices=["agents", "kafka", "livecoinwatch"], default="agents",
+           help="Data source (default: agents). 'kafka' reads from a Kafka/Redpanda "
+               "topic; 'livecoinwatch' polls the BTC price page.",
     )
     parser.add_argument(
         "--mm", type=int, default=1, metavar="N",
@@ -672,6 +850,9 @@ if __name__ == "__main__":
     if args.source == "kafka":
         source = KafkaSource()
         src_label = "Kafka"
+    elif args.source == "livecoinwatch":
+        source = LiveCoinWatchSource()
+        src_label = "LiveCoinWatch BTC"
     else:
         source = AgentOrderbookSimulator(
             num_mm=args.mm, num_retail=args.retail, num_manip=args.manip,
