@@ -52,11 +52,22 @@ class MarketMakerAgent(BaseAgent):
         super().__init__(name, asset, orderbook, id_generator)
         self.config = config or MarketMakerConfig()
         self._fair_value = self.config.fair_value
+        self._reference_price: Optional[float] = None
         self._rng = random.Random()  # for drift noise
 
     @property
     def fair_value(self) -> float:
         return self._fair_value
+
+    def sync_reference_price(self, price: float | None) -> None:
+        """Anchor the fair value to an externally supplied reference price.
+
+        This is used by the live dashboard so the market maker quotes around a
+        live BTC feed instead of a purely simulated price path.
+        """
+        if price is None or price <= 0:
+            return
+        self._reference_price = float(price)
 
     def step(self, current_step: int) -> None:
         # 1. Update fair value from last trade (NOT mid — avoids feedback loop)
@@ -103,6 +114,12 @@ class MarketMakerAgent(BaseAgent):
         to actual market activity.
         """
         cfg = self.config
+
+        # When a live reference price is available, anchor directly to it.
+        if self._reference_price is not None:
+            self._fair_value = max(1.0, float(self._reference_price))
+            return
+
         dt = 1.0 / cfg.steps_per_year
         mu = cfg.annual_drift
         sigma = cfg.annual_vol
