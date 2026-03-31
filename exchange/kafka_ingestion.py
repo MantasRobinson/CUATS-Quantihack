@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 import importlib
+import getpass
 import os
 import sys
 import time
 import argparse
+import re
+from collections import deque
 from dataclasses import asdict
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -23,6 +26,10 @@ try:
     import requests
 except ImportError:  # pragma: no cover - optional helper dependency
     requests = None
+
+
+LIVECOINWATCH_URL = "https://www.livecoinwatch.com/price/Bitcoin-BTC"
+LIVECOINWATCH_API_URL = "https://api.livecoinwatch.com/coins/single"
 
 try:
     from .quant_risk_control_plane import (
@@ -75,6 +82,69 @@ def _get_env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _kafka_api_version(default: Tuple[int, ...] = (0, 10, 0)) -> Tuple[int, ...]:
+    """Resolve the Kafka protocol version to use for kafka-python clients.
+
+    Setting this explicitly avoids kafka-python attempting broker version
+    auto-detection during client construction, which can fail before a broker
+    is fully reachable or when using a proxy / non-standard setup.
+    """
+    raw = os.getenv("KAFKA_API_VERSION")
+    if not raw:
+        return default
+
+    try:
+        parts = tuple(int(p) for p in raw.split(".") if p != "")
+        return parts if parts else default
+    except ValueError:
+        return default
+
+
+def _livecoinwatch_headers(api_key: Optional[str] = None) -> Dict[str, str]:
+    """Build request headers for Live Coin Watch.
+
+    The API key is read from ``LIVECOINWATCH_API_KEY`` if not passed explicitly.
+    """
+    key = api_key if api_key is not None else os.getenv("LIVECOINWATCH_API_KEY")
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if key:
+        headers["x-api-key"] = key
+    return headers
+
+
+def _ensure_livecoinwatch_api_key(prompt: bool = True) -> Optional[str]:
+    """Return the Live Coin Watch API key, prompting once if needed."""
+    existing = os.getenv("LIVECOINWATCH_API_KEY")
+    if existing:
+        return existing
+
+    if not prompt or not sys.stdin.isatty():
+        return None
+
+    key = getpass.getpass("Enter LIVECOINWATCH_API_KEY: ").strip()
+    if key:
+        os.environ["LIVECOINWATCH_API_KEY"] = key
+        return key
+    return None
+
+
+def _livecoinwatch_api_key(api_key: Optional[str] = None) -> Optional[str]:
+    return api_key if api_key is not None else os.getenv("LIVECOINWATCH_API_KEY")
+
+
+def _livecoinwatch_preflight_hint(url: str, exc: Exception) -> str:
+    api_key_state = "set" if os.getenv("LIVECOINWATCH_API_KEY") else "not set"
+    return (
+        f"\n[livecoinwatch] Cannot reach or parse {url}:\n"
+        f"  {exc}\n\n"
+        f"Suggested checks:\n"
+        f"  - verify the URL is reachable in a browser\n"
+        f"  - set LIVECOINWATCH_API_KEY (currently {api_key_state}) if required\n"
+        f"  - confirm your network / proxy allows outbound HTTPS requests\n"
+        f"  - if you only need a demo, run: python kafka_ingestion.py --livecoinwatch\n"
+    )
 
 
 def _parse_event(payload: Dict[str, object]) -> Optional[Tuple[str, object]]:
@@ -131,6 +201,7 @@ def create_consumer(
         "enable_auto_commit": True,
         "auto_offset_reset": "latest",
         "consumer_timeout_ms": poll_timeout_ms,
+        "api_version": _kafka_api_version(),
     }
     if security_protocol:
         kwargs["security_protocol"] = security_protocol
@@ -188,6 +259,194 @@ def iter_trade_feed(feed_url: str, auth_token: Optional[str] = None) -> Iterator
                 yield payload
 
 
+def _extract_livecoinwatch_price(html: str) -> float:
+    """Extract the BTC USD price from a Live Coin Watch HTML snapshot."""
+    patterns = [
+        r"Price in USD[^$]{0,80}\$([0-9,]+(?:\.[0-9]+)?)",
+        r'"price"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r"\$([0-9,]+(?:\.[0-9]+)?)\s*BTC",
+        r"BTC\s*\$([0-9,]+(?:\.[0-9]+)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
+        if match:
+            return float(match.group(1).replace(",", ""))
+    raise RuntimeError("Could not extract BTC price from Live Coin Watch HTML")
+
+
+def _fetch_livecoinwatch_api_price(
+    api_key: str,
+    *,
+    currency: str = "USD",
+    timeout: float = 10.0,
+) -> tuple[float, float]:
+    if requests is None:
+        raise RuntimeError("requests is required to fetch Live Coin Watch data")
+
+    t0 = time.monotonic()
+    resp = requests.post(
+        LIVECOINWATCH_API_URL,
+        headers={
+            "content-type": "application/json",
+            "accept": "application/json",
+            "x-api-key": api_key,
+            "User-Agent": "Mozilla/5.0",
+        },
+        json={"currency": currency, "code": "BTC", "meta": False},
+        timeout=timeout,
+    )
+
+    if resp.status_code == 429:
+        retry_after = resp.headers.get("Retry-After")
+        raise RuntimeError(f"Live Coin Watch API rate limited (429). Retry-After={retry_after!r}")
+
+    resp.raise_for_status()
+    data = resp.json()
+    price = float(data["rate"])
+    latency_ms = (time.monotonic() - t0) * 1000.0
+    return price, latency_ms
+
+
+def fetch_livecoinwatch_btc_price(
+    url: str = LIVECOINWATCH_URL,
+    *,
+    timeout: float = 10.0,
+    api_key: Optional[str] = None,
+) -> tuple[float, float]:
+    """Fetch a BTC/USD snapshot from Live Coin Watch.
+
+    Returns ``(price, latency_ms)``.
+    """
+    if requests is None:
+        raise RuntimeError("requests is required to fetch Live Coin Watch data")
+
+    livecoinwatch_api_key = _livecoinwatch_api_key(api_key)
+
+    # Prefer the official API when a key is available.
+    if livecoinwatch_api_key:
+        try:
+            return _fetch_livecoinwatch_api_price(
+                livecoinwatch_api_key,
+                timeout=timeout,
+            )
+        except Exception:
+            # Fall back to the public page if the API is unavailable.
+            pass
+
+    t0 = time.monotonic()
+    resp = requests.get(
+        url,
+        headers=_livecoinwatch_headers(api_key),
+        timeout=timeout,
+    )
+    if resp.status_code == 429:
+        retry_after = resp.headers.get("Retry-After")
+        raise RuntimeError(f"Live Coin Watch page rate limited (429). Retry-After={retry_after!r}")
+    resp.raise_for_status()
+    price = _extract_livecoinwatch_price(resp.text)
+    latency_ms = (time.monotonic() - t0) * 1000.0
+    return price, latency_ms
+
+
+def _build_livecoinwatch_market_event(
+    price: float,
+    latency_ms: float,
+    *,
+    previous_price: Optional[float] = None,
+    synthetic_spread_bps: float = 10.0,
+) -> Dict[str, object]:
+    spread = max(price * synthetic_spread_bps / 10_000.0, 0.01)
+    bid = round(price - spread / 2.0, 2)
+    ask = round(price + spread / 2.0, 2)
+    mid = round((bid + ask) / 2.0, 2)
+
+    if previous_price is None or previous_price <= 0:
+        ret_1s = 0.0
+    else:
+        ret_1s = (price - previous_price) / previous_price
+
+    return {
+        "type": "market",
+        "ts": time.time(),
+        "bid": bid,
+        "ask": ask,
+        "features": {
+            "ret_1s": ret_1s,
+            "spread_bps": synthetic_spread_bps,
+            "imbalance": 0.0,
+            "vol_10s": 0.0,
+        },
+        "venue_latency_ms": latency_ms,
+        "mid": mid,
+        "price": price,
+    }
+
+
+def livecoinwatch_market_event(
+    url: str = LIVECOINWATCH_URL,
+    *,
+    synthetic_spread_bps: float = 10.0,
+    timeout: float = 10.0,
+    api_key: Optional[str] = None,
+) -> Dict[str, object]:
+    """Return a market-style snapshot derived from Live Coin Watch.
+
+    The page only exposes a midpoint-style price, so this helper creates a
+    small synthetic spread around it for downstream consumers that expect bid,
+    ask, and spread-like inputs.
+    """
+    price, latency_ms = fetch_livecoinwatch_btc_price(url, timeout=timeout, api_key=api_key)
+    return _build_livecoinwatch_market_event(
+        price,
+        latency_ms,
+        synthetic_spread_bps=synthetic_spread_bps,
+    )
+
+
+def iter_livecoinwatch_market_events(
+    url: str = LIVECOINWATCH_URL,
+    *,
+    synthetic_spread_bps: float = 10.0,
+    poll_interval_s: float = 5.0,
+    timeout: float = 10.0,
+    api_key: Optional[str] = None,
+) -> Iterator[Dict[str, object]]:
+    """Continuously poll Live Coin Watch and yield market-style snapshots."""
+    previous_price: Optional[float] = None
+    backoff_s = max(poll_interval_s, 0.1)
+
+    while True:
+        try:
+            price, latency_ms = fetch_livecoinwatch_btc_price(url, timeout=timeout, api_key=api_key)
+            yield _build_livecoinwatch_market_event(
+                price,
+                latency_ms,
+                previous_price=previous_price,
+                synthetic_spread_bps=synthetic_spread_bps,
+            )
+            previous_price = price
+            backoff_s = max(poll_interval_s, 0.1)
+        except Exception:
+            # Keep the stream alive, but back off so we don't hammer the API.
+            backoff_s = min(max(backoff_s * 2.0, 5.0), 120.0)
+
+        time.sleep(backoff_s)
+
+
+def demo_livecoinwatch_market_event(
+    url: str = LIVECOINWATCH_URL,
+    *,
+    synthetic_spread_bps: float = 10.0,
+    api_key: Optional[str] = None,
+) -> Dict[str, object]:
+    """Convenience wrapper that fetches and returns one Live Coin Watch snapshot."""
+    return livecoinwatch_market_event(
+        url=url,
+        synthetic_spread_bps=synthetic_spread_bps,
+        api_key=api_key,
+    )
+
+
 def bridge_trade_feed_to_kafka(
     feed_url: str,
     *,
@@ -209,6 +468,7 @@ def bridge_trade_feed_to_kafka(
         bootstrap_servers=[b.strip() for b in brokers.split(",") if b.strip()],
         value_serializer=lambda value: json.dumps(value).encode("utf-8"),
         acks="all",
+        api_version=_kafka_api_version(),
     )
 
     # Re-publish the live feed into the topic as JSON messages.
@@ -216,6 +476,51 @@ def bridge_trade_feed_to_kafka(
         event = dict(payload)
         event.setdefault("type", event_type)
         producer.send(topic, event)
+        producer.flush()
+
+
+def bridge_livecoinwatch_to_kafka(
+    url: str = LIVECOINWATCH_URL,
+    *,
+    brokers: Optional[str] = None,
+    topic: Optional[str] = None,
+    synthetic_spread_bps: float = 10.0,
+    poll_interval_s: float = 5.0,
+    timeout: float = 10.0,
+    api_key: Optional[str] = None,
+) -> None:
+    """Continuously poll Live Coin Watch and publish BTC snapshots to Kafka."""
+    _require_kafka()
+    kafka_mod = importlib.import_module("kafka")
+    KafkaProducer = kafka_mod.KafkaProducer
+
+    brokers = brokers or _get_env("KAFKA_BROKERS", "localhost:9092")
+    topic = topic or _get_env("KAFKA_TOPIC", "btc-livecoinwatch")
+
+    producer = KafkaProducer(
+        bootstrap_servers=[b.strip() for b in brokers.split(",") if b.strip()],
+        value_serializer=lambda value: json.dumps(value).encode("utf-8"),
+        acks="all",
+        api_version=_kafka_api_version(),
+    )
+
+    print(f"[livecoinwatch->kafka] streaming {url} to {brokers} / {topic}", flush=True)
+
+    # Fail fast with a clearer message if the page cannot be fetched or parsed.
+    try:
+        fetch_livecoinwatch_btc_price(url, timeout=timeout, api_key=api_key)
+    except Exception as exc:
+        print(_livecoinwatch_preflight_hint(url, exc), file=sys.stderr)
+        raise SystemExit(1)
+
+    for payload in iter_livecoinwatch_market_events(
+        url,
+        synthetic_spread_bps=synthetic_spread_bps,
+        poll_interval_s=poll_interval_s,
+        timeout=timeout,
+        api_key=api_key,
+    ):
+        producer.send(topic, payload)
         producer.flush()
 
 
@@ -779,6 +1084,107 @@ def _print_json_demo(label: str, decisions: list[Decision]) -> None:
     print(decisions_to_json(decisions, indent=2))
 
 
+def _print_livecoinwatch_snapshot(snapshot: Dict[str, object]) -> None:
+    # Compact printable form for the live BTC price helper.
+    print("== livecoinwatch_snapshot ==")
+    print(json.dumps(snapshot, indent=2))
+
+
+def visualize_livecoinwatch_stream(
+    url: str = LIVECOINWATCH_URL,
+    *,
+    synthetic_spread_bps: float = 10.0,
+    poll_interval_s: float = 5.0,
+    timeout: float = 10.0,
+    api_key: Optional[str] = None,
+    window: int = 180,
+    save_path: Optional[str] = None,
+) -> None:
+    """Display a live BTC price chart from Live Coin Watch.
+
+    This visualizer polls continuously and plots the mid price (with bid/ask
+    bands) so the stream can be observed without Kafka.
+    """
+    try:
+        plt = importlib.import_module("matplotlib.pyplot")
+        animation = importlib.import_module("matplotlib.animation")
+    except ModuleNotFoundError:
+        print("matplotlib is required for live visualization")
+        return
+
+    prices = deque(maxlen=window)
+    bids = deque(maxlen=window)
+    asks = deque(maxlen=window)
+    times = deque(maxlen=window)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    fig.patch.set_facecolor("#0D1117")
+    ax.set_facecolor("#111827")
+    ax.set_title("Live Coin Watch BTC/USD", color="#E5E7EB")
+    ax.set_xlabel("Sample")
+    ax.set_ylabel("Price (USD)")
+    ax.grid(True, alpha=0.15)
+    ax.tick_params(colors="white")
+    ax.xaxis.label.set_color("white")
+    ax.yaxis.label.set_color("white")
+    ax.title.set_color("white")
+    for spine in ax.spines.values():
+        spine.set_color("white")
+
+    ln_mid, = ax.plot([], [], color="#22C55E", lw=1.6, label="Mid")
+    ln_bid, = ax.plot([], [], color="#60A5FA", lw=0.8, alpha=0.8, label="Bid")
+    ln_ask, = ax.plot([], [], color="#F87171", lw=0.8, alpha=0.8, label="Ask")
+    leg = ax.legend(loc="upper left")
+    for text in leg.get_texts():
+        text.set_color("white")
+
+    def _update(_frame):
+        try:
+            event = livecoinwatch_market_event(
+                url=url,
+                synthetic_spread_bps=synthetic_spread_bps,
+                timeout=timeout,
+                api_key=api_key,
+            )
+        except Exception as exc:
+            ax.set_title(f"Live Coin Watch BTC/USD — error: {exc}", color="#FCA5A5")
+            return ln_mid, ln_bid, ln_ask
+
+        prices.append(event.get("mid"))
+        bids.append(event.get("bid"))
+        asks.append(event.get("ask"))
+        times.append(event.get("ts"))
+
+        xs = list(range(1, len(prices) + 1))
+        ln_mid.set_data(xs, list(prices))
+        ln_bid.set_data(xs, list(bids))
+        ln_ask.set_data(xs, list(asks))
+
+        if prices:
+            lo = min(min(bids), min(prices), min(asks))
+            hi = max(max(bids), max(prices), max(asks))
+            pad = max((hi - lo) * 0.08, 10.0)
+            ax.set_xlim(1, max(len(prices), window))
+            ax.set_ylim(lo - pad, hi + pad)
+
+        return ln_mid, ln_bid, ln_ask
+
+    ani = animation.FuncAnimation(
+        fig,
+        _update,
+        interval=max(int(poll_interval_s * 1000), 250),
+        blit=False,
+        cache_frame_data=False,
+    )
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"saved chart: {save_path}")
+
+    plt.show()
+    return ani
+
+
 def visualize_decisions(
     decisions: list[Decision],
     title: str = "Control decisions",
@@ -863,7 +1269,61 @@ if __name__ == "__main__":
         default="kafka_control_demo.png",
         help="PNG path for the visualiser output",
     )
+    parser.add_argument(
+        "--livecoinwatch",
+        action="store_true",
+        help="Fetch and print one Live Coin Watch BTC snapshot",
+    )
+    parser.add_argument(
+        "--livecoinwatch-url",
+        default=LIVECOINWATCH_URL,
+        help="Live Coin Watch BTC page URL to poll",
+    )
+    parser.add_argument(
+        "--livecoinwatch-spread-bps",
+        type=float,
+        default=10.0,
+        help="Synthetic bid/ask spread to wrap around the BTC price",
+    )
+    parser.add_argument(
+        "--bridge-livecoinwatch",
+        action="store_true",
+        help="Continuously stream Live Coin Watch BTC snapshots into Kafka",
+    )
+    parser.add_argument(
+        "--bridge-kafka-brokers",
+        default=_get_env("KAFKA_BROKERS", "localhost:9092"),
+        help="Kafka brokers for the Live Coin Watch bridge",
+    )
+    parser.add_argument(
+        "--bridge-kafka-topic",
+        default=_get_env("KAFKA_TOPIC", "btc-livecoinwatch"),
+        help="Kafka topic for the Live Coin Watch bridge",
+    )
+    parser.add_argument(
+        "--bridge-poll-interval",
+        type=float,
+        default=5.0,
+        help="Polling interval in seconds for the Live Coin Watch bridge",
+    )
     args = parser.parse_args()
+
+    livecoinwatch_key = None
+    if args.livecoinwatch or args.bridge_livecoinwatch:
+        livecoinwatch_key = _ensure_livecoinwatch_api_key(prompt=True)
+
+    if args.bridge_livecoinwatch:
+        if args.visualize:
+            print("[livecoinwatch->kafka] streaming only; --visualize is ignored for bridge mode", flush=True)
+        bridge_livecoinwatch_to_kafka(
+            url=args.livecoinwatch_url,
+            brokers=args.bridge_kafka_brokers,
+            topic=args.bridge_kafka_topic,
+            synthetic_spread_bps=args.livecoinwatch_spread_bps,
+            poll_interval_s=args.bridge_poll_interval,
+            api_key=livecoinwatch_key,
+        )
+        raise SystemExit(0)
 
     control_demo = demo_control_runtime()
     kafka_demo = demo_kafka_control_pipeline()
@@ -889,3 +1349,18 @@ if __name__ == "__main__":
             title="demo_kafka_control_pipeline",
             save_path=kafka_chart_path,
         )
+
+    if args.livecoinwatch:
+        if args.visualize:
+            visualize_livecoinwatch_stream(
+                url=args.livecoinwatch_url,
+                synthetic_spread_bps=args.livecoinwatch_spread_bps,
+                api_key=livecoinwatch_key,
+            )
+        else:
+            snapshot = demo_livecoinwatch_market_event(
+                url=args.livecoinwatch_url,
+                synthetic_spread_bps=args.livecoinwatch_spread_bps,
+                api_key=livecoinwatch_key,
+            )
+            _print_livecoinwatch_snapshot(snapshot)
