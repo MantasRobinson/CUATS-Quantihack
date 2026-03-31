@@ -365,8 +365,8 @@ body.show-debug #view-debug { display: block; }
 <!-- ── Click-to-start overlay ──────────────────────────────────────── -->
 <div id="overlay">
   <div id="overlay-content">
-    <h1>CUATS ORCA</h1>
-    <p>Orderbook Risk &amp; Control Analyser</p>
+    <h1>THE SYNESTHETIC ORDERBOOK</h1>
+    <p>Activate audio &amp; visual market feed</p>
     <button id="overlay-start-btn">START</button>
   </div>
 </div>
@@ -382,7 +382,7 @@ body.show-debug #view-debug { display: block; }
 <div id="view-main">
 
   <div id="main-header">
-    <span class="title">CUATS ORCA: THE SYNESTHETIC ORDERBOOK</span>
+    <span class="title">THE SYNESTHETIC ORDERBOOK</span>
     <span id="conn-status">DISCONNECTED</span>
   </div>
 
@@ -415,6 +415,7 @@ body.show-debug #view-debug { display: block; }
     <canvas id="morph-canvas"></canvas>
     <div id="state-badge" class="s-OK">OK</div>
     <div id="state-timer"><span class="timer-label">IN STATE</span>00:00</div>
+    <div id="state-driver">Driver: —</div>
     <ul id="reasons-list">
       <li style="color:var(--dim);font-style:italic">Awaiting feed…</li>
     </ul>
@@ -448,6 +449,7 @@ body.show-debug #view-debug { display: block; }
   <div id="dbg-header">
     <span class="title">ORDERBOOK DEBUG</span>
     <span id="state-pill" class="OK">OK</span>
+    <span class="hstat">Driver <span id="h-driver">—</span></span>
     <span class="hstat">Mid <span id="h-mid">—</span></span>
     <span class="hstat">Bid <span id="h-bid">—</span></span>
     <span class="hstat">Ask <span id="h-ask">—</span></span>
@@ -931,6 +933,7 @@ function updateDepth(bids, asks) {
 function applyPayload(data) {
   const { state, reasons, smoothed_metrics: m } = data;
   const d = data.debug || {};
+  const driver = data.state_driver || reasons?.[0] || 'ok';
 
   // ── Audio ─────────────────────────────────────────────────────────
   if (audioReady) {
@@ -959,6 +962,7 @@ function applyPayload(data) {
   setEl('m-spread',  m.spread_bps.toFixed(1));
   setEl('m-latency', m.latency_ms.toFixed(1));
   setEl('m-zscore',  m.drift_zscore.toFixed(2));
+  setEl('state-driver', 'Driver: ' + driver.replace(/_/g, ' '));
   colourMetric('m-spread',  m.spread_bps,   80, 120);
   colourMetric('m-latency', m.latency_ms,   50, 100);
   colourMetric('m-zscore',  m.drift_zscore,  5,  8);
@@ -978,6 +982,7 @@ function applyPayload(data) {
   const pill = document.getElementById('state-pill');
   pill.textContent = state.replace('_',' ');
   pill.className   = state;
+  setEl('h-driver', driver.replace(/_/g, ' '));
   updateStateStrip(state);
 
   // Spread is always available from smoothed_metrics (PID runs every tick)
